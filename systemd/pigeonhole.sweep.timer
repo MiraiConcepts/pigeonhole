@@ -1,0 +1,13 @@
+# Timer policy: Persistent=true and [Install] WantedBy=timers.target are
+# inherited from systemd/policy/10-base-timer.conf. `systemctl cat` shows them.
+[Unit]
+Description=Nightly documents sweep (07:45 SGT)
+
+[Timer]
+# Morning-side, deliberately: everything the sweep does ends in a phone
+# notification, and a 3am ping trains the owner to mute the topic. 07:45 SGT —
+# fifteen minutes after capture's sweep, so the two ping bursts stay
+# distinguishable, and well clear of the 03:00 backstop and the 04:00 immich
+# bake. Timezone pinned rather than inherited: this host runs PDT.
+OnCalendar=*-*-* 07:45:00 Asia/Singapore
+RandomizedDelaySec=5min

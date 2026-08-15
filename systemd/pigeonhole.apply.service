@@ -1,0 +1,52 @@
+# Class: adhoc      (see systemd/policy/20-adhoc.conf)
+# Family: intake    (see systemd/policy/30-intake.conf)
+# Base:             (see systemd/policy/10-base.conf)
+#
+# Inherited and therefore NOT repeated here: OnFailure, Type, journal logging, the
+# base hardening, the intake sandbox and its three InaccessiblePaths,
+# Environment=PATH, and the 1800/12 start limit.
+#
+# A marker that cannot be drained would spin this unit. The script deletes markers
+# BEFORE acting on them — deleting first rather than per-branch is the only version
+# of that invariant which cannot be forgotten in a later edit — so a spin should be
+# unreachable. The class start limit is what holds when the invariant itself is
+# what broke. Cheaper to breach than the triage's (no API calls here), but a unit
+# restarting forever is still a unit whose logs nobody can read.
+
+[Unit]
+Description=Documents apply (perform the move a button tap asked for)
+Requires=zfs-mount.service
+After=zfs-mount.service
+
+[Service]
+User=carrein
+Group=carrein
+WorkingDirectory=/zpool/catallenya/pigeonhole/intake-state
+Environment=HOME=/home/carrein
+
+# NO EnvironmentFile. This step talks to no model and needs no API key — it reads a
+# marker, re-verifies a record the triage wrote, and moves a file. Keeping the key
+# out of this unit's environment is deliberate: it is the half of the pipeline that
+# can write to master/documents, so it gets the smaller secret surface, not the
+# larger one.
+TimeoutStartSec=5min
+
+ExecStart=/zpool/catallenya/pigeonhole/scripts/pigeonhole.apply.sh
+
+# Writes to master/documents happen only here and in pigeonhole.sweep.service, both
+# deliberately the least reachable things in the pipeline: oneshots that run for a
+# second, triggered by a local file or a timer, with no network listener of their
+# own. The approve container — long-lived, tailnet-reachable, gated by an
+# unauthenticated ntfy topic — cannot perform a move at all; it can only ask for
+# one that was already proposed. That asymmetry is the whole security argument for
+# the redesign. Do not collapse it by giving the container a documents mount.
+ReadWritePaths=/zpool/catallenya/syncthing/data/master/documents
+ReadWritePaths=/zpool/catallenya/pigeonhole/intake-state
+
+[X-Catallenya]
+Class=adhoc
+Family=intake
+# No MaxAge: it fires on a button tap and ran on 4 of the last 60 days. A quiet
+# week means you had nothing to file, not that anything is broken.
+Freshness=unit:pigeonhole.apply.path
+Producer=container:pigeonhole-approve

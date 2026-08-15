@@ -1,0 +1,46 @@
+# Class: scheduled  (see systemd/policy/20-scheduled.conf)
+# Family: intake    (see systemd/policy/30-intake.conf)
+# Base:             (see systemd/policy/10-base.conf)
+#
+# Inherited and therefore NOT repeated here: OnFailure, Type, journal logging, the
+# base hardening, the intake sandbox and its three InaccessiblePaths, and
+# Environment=PATH.
+
+[Unit]
+Description=Documents sweep (re-notify stale proposals, bin week-old ones)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=carrein
+Group=carrein
+WorkingDirectory=/zpool/catallenya/pigeonhole/intake-state
+Environment=HOME=/home/carrein
+TimeoutStartSec=5min
+
+# No ANTHROPIC_API_KEY here, deliberately: the sweep makes no API calls. It reads
+# records the triage wrote, moves week-old staged files to bin/, and posts to ntfy
+# — it has no reason to hold the key. Same split as afterimage.sweep.service.
+ExecStart=/zpool/catallenya/pigeonhole/scripts/pigeonhole.sweep.sh
+
+# Second writer to master/documents after pigeonhole.apply.service, held to the same
+# standard: a oneshot with no network listener, unreachable from anything, whose
+# only writes are staged -> bin/ moves on records the triage produced.
+#
+# The stamp dir needs an explicit entry because the intake family sets
+# ProtectSystem=strict — without it the completion stamp cannot be written and the
+# watchdog would report this job as dead while it runs perfectly.
+ReadWritePaths=/zpool/catallenya/syncthing/data/master/documents
+ReadWritePaths=/zpool/catallenya/pigeonhole/intake-state
+
+[X-Catallenya]
+Class=scheduled
+Family=intake
+# Daily at 07:45 SGT with 5 minutes of jitter. 36h allows one missed run.
+MaxAge=36h
+# No natural artifact — a sweep with nothing to nudge or bin writes nothing.
+#
+# NOT .sweep.lock, which looks like a completion record and is not: `exec 9>` on it
+# truncates the file when the run STARTS, and its mtime updates even if the run
+# then fails. That is trigger-semantics, the exact thing this stamp exists to avoid.
+Freshness=stamp:/zpool/catallenya/systemd/state/pigeonhole.sweep

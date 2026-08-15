@@ -1,0 +1,75 @@
+[Unit]
+Description=Watch the documents root for newly dropped files
+After=zfs-mount.service
+Requires=zfs-mount.service
+
+[Path]
+# Fires the moment a document lands at the root of master/documents — dropped by
+# hand on the server, or synced in from a phone or laptop.
+#
+# WHY THESE ARE EXTENSION GLOBS AND NOT JUST `*`. glob(3) matches DIRECTORIES too,
+# so `pigeonhole/*` matches staging/, bin/ and all eleven numbered folders. Those
+# always exist, so the condition would never go false, and systemd re-checks after
+# each triggered run — the unit would fire forever, at an opus call per iteration.
+# Caught in testing 2026-07-31; an earlier version of this file claimed directories
+# could not match, which is simply untrue.
+#
+# The character classes are how glob(3) does case-insensitivity: *.[pP][dD][fF]
+# catches .pdf, .PDF and .Pdf alike. The set matches what openable() supports.
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[pP][dD][fF]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[jJ][pP][gG]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[jJ][pP][eE][gG]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[pP][nN][gG]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[zZ][iI][pP]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[hH][eE][iI][cC]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[hH][eE][iI][fF]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[wW][eE][bB][pP]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[tT][iI][fF][fF]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[tT][iI][fF]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[aA][vV][iI][fF]
+
+# AND the common types we CANNOT render. A glob here means "wake up", not
+# "I can read this" — the triage stages an unreadable file as UNSUPPORTED_TYPE
+# and tells you, which is the whole point. Without these, dropping a .docx did
+# nothing at all until the next day's backstop: no notification, no staging,
+# just a file sitting where you left it looking ignored.
+#
+# NOT *.md, and not a bare *.* — CLAUDE.md lives permanently at this root, so
+# either would match forever and spin the unit.
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[dD][oO][cC][xX]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[dD][oO][cC]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[oO][dD][tT]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[xX][lL][sS][xX]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[xX][lL][sS]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[oO][dD][sS]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[pP][pP][tT][xX]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[pP][pP][tT]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[oO][dD][pP]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[tT][xX][tT]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[rR][tT][fF]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[hH][tT][mM][lL]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[hH][tT][mM]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[cC][sS][vV]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[eE][pP][uU][bB]
+# Both of these were found by checking this list against the actual corpus after
+# writing it — .opencert is NUS's digital certificate format, which nobody
+# enumerating "document types" would ever guess. That the list was wrong on its
+# first contact with real data is exactly why the backstop timer exists and is not
+# an optimisation to be removed later.
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[sS][vV][gG]
+PathExistsGlob=/zpool/catallenya/syncthing/data/master/documents/*.[oO][pP][eE][nN][cC][eE][rR][tT]
+
+# A file with some other extension therefore does not TRIGGER a run — but a run,
+# once triggered, drains every file at the root regardless of extension, because
+# list_candidates() is not extension-filtered and openable() flags what it cannot
+# read. The backstop timer covers what is left: a novel extension nobody listed,
+# and a file with no extension at all.
+#
+# systemd re-checks after the service exits and re-triggers while a glob still
+# matches. pigeonhole.triage.sh therefore MUST move every file out of the root on
+# every branch — a leftover document spins this unit and bills an API call per
+# iteration. That invariant is asserted at the end of the script, exercised by
+# tests on every failure branch, and backstopped by a start limit on the service.
+
+[Install]
+WantedBy=paths.target
