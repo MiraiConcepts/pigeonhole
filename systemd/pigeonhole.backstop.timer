@@ -1,0 +1,31 @@
+# Timer policy: Persistent=true and [Install] WantedBy=timers.target are
+# inherited from systemd/policy/10-base-timer.conf. `systemctl cat` shows them.
+[Unit]
+Description=Daily sweep for documents the path unit could not see
+
+[Timer]
+# Triggers pigeonhole.triage.service directly — the SAME unit the path unit fires,
+# with the same environment and sandbox. A backstop with its own wrapper service
+# would be a second copy of that configuration, free to drift from the thing it is
+# supposed to back up.
+Unit=pigeonhole.triage.service
+
+# pigeonhole.triage.path only watches the file types the pipeline can render, because
+# a bare `pigeonhole/*` glob also matches staging/, bin/ and the numbered folders —
+# which always exist, so the unit would fire forever at an API call per spin.
+#
+# The cost of that correctness is a gap: drop a lone .docx, or anything else outside
+# the list, and nothing wakes up. It sits at the root unseen and unreported, which is
+# the worst outcome in a system whose whole promise is that it tells you about what
+# you dropped. (Dropped ALONGSIDE a supported file it is picked up immediately —
+# a triggered run drains the root regardless of extension.)
+#
+# So: once a day, look anyway. The triage exits in milliseconds when the root is
+# empty, which it almost always is, and an unsupported file gets staged and reported
+# as UNSUPPORTED_TYPE with a Discard button (blocked proposals get no Accept, and
+# skip retired 2026-08-09).
+#
+# 03:00 SGT, the slot the retired nightly used — clear of the immich rotation bake at
+# 04:00. Timezone pinned rather than inherited: this host runs PDT.
+OnCalendar=*-*-* 03:00:00 Asia/Singapore
+RandomizedDelaySec=300

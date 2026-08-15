@@ -1,0 +1,55 @@
+# Class: adhoc      (see systemd/policy/20-adhoc.conf)
+# Family: intake    (see systemd/policy/30-intake.conf)
+# Base:             (see systemd/policy/10-base.conf)
+#
+# Inherited and therefore NOT repeated here: OnFailure, Type, journal logging, the
+# base hardening, the intake sandbox and its three InaccessiblePaths,
+# Environment=PATH, and the 1800/12 start limit.
+#
+# That start limit is the backstop this design is most exposed to, and it now
+# arrives by class rather than by being remembered: the .path unit re-triggers
+# while anything remains at the root, so a branch that returns without moving the
+# file would spin at one opus call per iteration. The script asserts the invariant
+# itself and every branch is tested, but the limit is what holds when the
+# assertion is the part that broke. Reasoning for the specific values, including
+# why a narrow window is worse than none, lives in 20-adhoc.conf.
+
+[Unit]
+Description=Documents triage (classify a dropped document, stage a proposal)
+After=network-online.target docker.service
+Wants=network-online.target
+# Also set by the base policy, but stated here because this job is .path-triggered
+# and pigeonhole.triage.path already requires zfs-mount: the service must not be
+# weaker than its watcher. It also matters for the backstop timer, which fires
+# this unit directly — without the requirement a boot where /zpool failed to mount
+# would run the triage against a nonexistent root and report "nothing at root",
+# which is a false all-clear.
+Requires=zfs-mount.service
+
+[Service]
+User=carrein
+Group=carrein
+WorkingDirectory=/zpool/catallenya/pigeonhole/intake-state
+Environment=HOME=/home/carrein
+
+# Shared with afterimage.triage.service. Root-owned 0600, read by systemd (PID 1) and
+# injected here, so the key is never in a carrein-readable file. No `-` prefix: a
+# missing file should fail the unit loudly rather than run a triage that cannot work.
+EnvironmentFile=/etc/ai.env
+
+# Generous. One document is one opus call at ~7s, and a synced batch is
+# drained serially in a single invocation; MAX_PER_RUN bounds the worst case.
+TimeoutStartSec=30min
+
+ExecStart=/zpool/catallenya/pigeonhole/scripts/pigeonhole.triage.sh
+
+ReadWritePaths=/zpool/catallenya/syncthing/data/master/documents
+ReadWritePaths=/zpool/catallenya/pigeonhole/intake-state
+
+[X-Catallenya]
+Class=adhoc
+Family=intake
+# No MaxAge: event-driven, no cadence. It ran on 11 of the last 60 days and every
+# one of those was correct — a day with no dropped document is a day with no run.
+Freshness=unit:pigeonhole.triage.path
+Producer=container:syncthing

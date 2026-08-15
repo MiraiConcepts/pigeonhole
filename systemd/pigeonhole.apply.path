@@ -1,0 +1,21 @@
+[Unit]
+Description=Watch for documents approval markers
+After=zfs-mount.service
+Requires=zfs-mount.service
+
+[Path]
+# Fires the instant the approve container records a button tap. The container
+# writes .part-<id> and renames to <id>.json, and this glob deliberately matches
+# only the finished name — a partially written marker is invisible here, so apply
+# never reads half a file.
+PathExistsGlob=/zpool/catallenya/pigeonhole/intake-state/approvals/*.json
+
+# systemd re-checks after the service exits and re-triggers while the glob still
+# matches. pigeonhole.apply.sh therefore deletes every marker it picks up, before
+# acting on it — deleting first rather than per-branch is the only version of that
+# invariant which cannot be forgotten in a later edit. Cheaper to breach than the
+# triage's (no API calls here) but a unit restarting forever is still a unit whose
+# logs nobody can read.
+
+[Install]
+WantedBy=paths.target

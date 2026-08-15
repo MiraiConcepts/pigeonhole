@@ -1,0 +1,6 @@
+../data/
+../scripts/
+../intake-state/
+*.md
+.git
+.gitignore
