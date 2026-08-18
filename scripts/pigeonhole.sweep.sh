@@ -102,6 +102,11 @@ for f in "${PROPOSALS_DIR}"/*.json; do
     rec="$(cat "$f")"
     [[ "$(jq -r '.state // ""' <<<"$rec")" == "staged" ]] || continue
     [[ "$(jq -r '.kind  // ""' <<<"$rec")" == "batch"  ]] && continue
+    # Paused records are handled below, on their own clock. Ageing them from the file
+    # mtime like a proposal would be wrong twice: a retry rewrites the record, so the
+    # nudge would fire on the wrong day, and there is nothing to nudge anyway — no
+    # proposal, no buttons, and nothing the owner can do except top up.
+    [[ "$(jq -r '.paused // "null"' <<<"$rec")" != "null" ]] && continue
     id="$(basename "$f" .json)"
     age_h=$(( (now - $(stat -c %Y "$f" 2>/dev/null || echo "$now")) / 3600 ))
 
@@ -237,6 +242,59 @@ for f in "${PROPOSALS_DIR}"/*.json; do
     log "withdrew the binned note for ${id:0:8} (${age_d}d in bin/) — document untouched"
 done
 
+# --- paused: bin at seven days, retry everything younger ---------------------
+# Order matters. Binning runs FIRST so a document about to reach day 7 is not sent for
+# one more model call it will never use, and the retry then covers exactly what is
+# still worth retrying.
+#
+# The clock is first_failed_at, written once by the triage and never rewritten. The
+# record's own mtime is useless here: every retry touches it, so ageing from it would
+# restart the seven days on each attempt and nothing would ever reach day 7 — the
+# defect that got `skip` deleted.
+paused_binned=0
+for f in "${PROPOSALS_DIR}"/*.json; do
+    rec="$(cat "$f")"
+    [[ "$(jq -r '.state  // ""' <<<"$rec")" == "staged" ]] || continue
+    ff="$(jq -r '.first_failed_at // empty' <<<"$rec")"
+    [[ -n "$ff" ]] || continue
+    [[ "$(jq -r '.paused // "null"' <<<"$rec")" != "null" ]] || continue
+    id="$(basename "$f" .json)"
+    sp="$(jq -r '.at // .staged_path // empty' <<<"$rec")"
+    cur="${DOCS}/${sp}"
+    [[ -n "$sp" && -f "$cur" ]] || continue
+    age_d=$(( (now - $(date -d "$ff" +%s 2>/dev/null || echo "$now")) / 86400 ))
+    (( age_d >= BIN_AFTER_DAYS )) || continue
+
+    dest="${BIN_DIR}/$(basename "$cur")"
+    [[ -e "$dest" ]] && dest="${BIN_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$cur")"
+    if (( DRY )); then log "would bin ${sp} (${age_d}d paused)"; continue; fi
+    if mv -n -- "$cur" "$dest" 2>/dev/null && [[ -f "$dest" && ! -e "$cur" ]]; then
+        stamp "$f" --arg at "${dest#"${DOCS}/"}" '. + {state:"binned", at:$at}'
+        paused_binned=$((paused_binned + 1)); log "binned ${sp} (${age_d}d paused)"
+        # No Accept: there is no proposal to accept, because the model never answered.
+        # Delete is the only arm, and the document itself stays in bin/ until you tap it.
+        retract "$id"
+        notify "Binned: 1 Document" "" wastebasket \
+            "1\. $(md_escape "$(basename "$sp")")
+
+_The API could not read it in $(( age_d )) days. In bin/ now; nothing is deleted without a tap._" \
+            "$(bin_buttons "$id" 0)" "$id"
+    else
+        log "  !! could not bin ${sp}"
+    fi
+done
+
+# Retrying is NOT done here, and that is a boundary rather than an omission. This
+# sweep holds no ANTHROPIC_API_KEY — its unit has no EnvironmentFile and its header
+# has said so since it was written — because it reads records, moves files and posts
+# to ntfy, and has no reason to be able to spend money. Calling the triage from here
+# would either fail at runtime or force the key into a job that has never needed it.
+#
+# pigeonhole.retry.timer owns that instead: same script, same key handling as the
+# triage, its own unit and its own completion stamp, so the watchdog notices if it
+# stops running. It fires at 07:50, five minutes after this, so the day-7 binning
+# above has already removed anything not worth another model call.
+
 # --- withdraw a batch message that has outlived its members ------------------
 # The batch notification is the one message that does not belong to a single
 # document, so nothing above can retire it: its members leave staging one at a
@@ -267,5 +325,6 @@ for b in "${PROPOSALS_DIR}"/*.json; do
     log "withdrew the batch notification (no members still staged)"
 done
 
-(( renotified || binned )) && log "sweep: ${renotified} re-notified, ${binned} binned"
+(( renotified || binned || paused_binned )) && \
+    log "sweep: ${renotified} re-notified, ${binned} binned, ${paused_binned} binned after an outage"
 exit 0
