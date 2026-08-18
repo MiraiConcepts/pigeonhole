@@ -255,7 +255,7 @@ log "draining ${#CANDS[@]} file(s) from root"
 declare -A CORPUS_BY_HASH=()
 while IFS= read -r f; do CORPUS_BY_HASH["$(sha256_of "$f")"]="$f"; done < <(list_corpus)
 
-STAGED=0; BINNED=0; BLOCKED=0
+STAGED=0; BINNED=0; BLOCKED=0; PAUSED=0
 
 for name in "${CANDS[@]}"; do
     src="${DOCS}/${name}"
@@ -302,7 +302,34 @@ for name in "${CANDS[@]}"; do
     fi
 
     log "  CLASSIFY ${name}"
-    if ! prop="$(ask "$pngs" "$(classify_prompt)" "$(build_schema)")"; then
+    # The four verdicts are read separately here. Until now this was a bare
+    # `if ! prop=...`, which collapsed all three failures into CLASSIFY_FAILED — so a
+    # timeout was reported as terminal, the document was marked blocked, and nothing
+    # ever retried it. afterimage could already tell them apart; this could not.
+    ask_rc=0
+    prop="$(ask "$pngs" "$(classify_prompt)" "$(build_schema)")" || ask_rc=$?
+    if (( ask_rc == 2 || ask_rc == 3 )); then
+        # PARKED, not blocked. `blocked` means a human has to look; this needs no
+        # human at all, only an API that answers. It is staged under its ORIGINAL
+        # name — there is no proposal to name it after — and carries no flags and no
+        # blocked code, so nothing offers a button for a decision that does not exist.
+        #
+        # first_failed_at is written ONCE and never rewritten. pigeonhole ages a
+        # record from its file mtime, which every retry touches, so without a stamp of
+        # its own the seven-day clock would restart on every attempt and the item
+        # would never reach day 7 — the same defect that got `skip` deleted.
+        if staged="$(stage_file "$src" "$name")"; then
+            PAUSED=$((PAUSED+1)); log "  PAUSE  ${name} — $(ai_reason "$ask_rc")"
+            record "$id" "$(jq -c --argjson b "$base" --arg p "${staged#"${DOCS}/"}" \
+                --arg r "$(ai_reason "$ask_rc")" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '$b + {state:"staged", paused:$r, first_failed_at:$t, staged_path:$p}' <<<'{}')"
+        else
+            log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
+        fi
+        continue
+    elif (( ask_rc != 0 )); then
+        # Terminal and per-item: a refusal, a truncated reply, a malformed request.
+        # Retrying THIS document cannot help, so it is blocked for a human.
         if staged="$(stage_file "$src" "$name")"; then
             BLOCKED=$((BLOCKED+1)); log "  BLOCK  ${name} (CLASSIFY_FAILED)"
             record "$id" "$(jq -c --argjson b "$base" --arg p "${staged#"${DOCS}/"}" \
@@ -365,7 +392,7 @@ for name in "${CANDS[@]}"; do
     fi
 done
 
-log "staged ${STAGED}, blocked ${BLOCKED}, binned ${BINNED}"
+log "staged ${STAGED}, blocked ${BLOCKED}, binned ${BINNED}, paused ${PAUSED}"
 
 # Assert the invariant rather than trusting it. Files deliberately deferred by the
 # cap are EXPECTED to remain — the .path unit re-firing on them is how the next
@@ -417,6 +444,10 @@ for f in "${PROPOSALS_DIR}"/*.json; do
     [[ -f "$f" ]] || continue
     [[ "$(jq -r '.state // ""' "$f")" == "staged" ]] || continue
     [[ "$(jq -r '.kind  // ""' "$f")" == "batch"  ]] && continue
+    # A paused record has no proposal to accept, so it belongs in none of the three
+    # buckets below — without this it would fall through to `clean` and be offered an
+    # Accept button for a filing decision that was never made.
+    [[ "$(jq -r '.paused // "null"' "$f")" != "null" ]] && continue
     rid="$(basename "$f" .json)"
     if [[ "$(jq -r '.blocked // "null"' "$f")" != "null" ]]; then blocked_ids+=("$rid")
     elif [[ "$(jq -r '.flags | length' "$f")" != "0" ]];        then flagged+=("$rid")
@@ -459,6 +490,33 @@ _${TRUNCATED} more still queued_
     notify "Staged: ${#clean[@]} Document$( (( ${#clean[@]} == 1 )) || printf s )" \
         "" clipboard "$body" "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
     log "  notified batch of ${#clean[@]}"
+fi
+
+# --- paused: one message per topic, whatever the count -----------------------
+# Built from everything currently paused, not just this run — the same rule the batch
+# follows. Twelve documents stuck behind one outage is one fact, and a ping per
+# document would be twelve notifications with identical text and nothing to tap.
+#
+# Retract-then-publish under a stable id so the previous count is replaced rather
+# than stacked. No buttons: no tap is owed, and the next successful retry clears it.
+paused_items=()
+for f in "${PROPOSALS_DIR}"/*.json; do
+    [[ -f "$f" ]] || continue
+    [[ "$(jq -r '.state  // ""' "$f")" == "staged" ]] || continue
+    [[ "$(jq -r '.paused // "null"' "$f")" == "null" ]] && continue
+    paused_items+=("$(basename "$(jq -r '.at // .staged_path // .original_name' "$f")")")
+done
+if (( ${#paused_items[@]} )); then
+    # The reason is whatever the most recent parked document hit. They are almost
+    # always the same outage; if they are not, the retry that clears one clears the
+    # message and the next run republishes with what is actually still true.
+    pz_reason="$(jq -r '.paused // empty' "${PROPOSALS_DIR}"/*.json 2>/dev/null | tail -1)"
+    retract "$PAUSED_NTFY_ID"
+    notify "$(paused_title "${#paused_items[@]}" Document)" "" warning \
+        "$(paused_body "${pz_reason:-The API is unavailable}" \
+                       "moved to bin/ in 7 days, nothing is deleted" "${paused_items[@]}")" \
+        "" "$PAUSED_NTFY_ID"
+    log "  notified ${#paused_items[@]} paused"
 fi
 
 # Individuals, new-this-run only.

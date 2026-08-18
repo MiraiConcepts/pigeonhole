@@ -366,6 +366,11 @@ bin_buttons() { # $1=id $2=1 if the Accept button should be offered
 # batch withdraw the last one without having to look up which id that was.
 # Per-topic, so it cannot collide with anything outside this pipeline.
 BATCH_NTFY_ID="documents-batch"
+# The paused message is one-per-topic, not one-per-document: a stable literal, so the
+# next run retracts the previous one and republishes with the new count rather than
+# stacking a ping per stuck document. Twelve documents arriving during an outage is
+# one fact, and it should read as one.
+PAUSED_NTFY_ID="pigeonhole-paused"
 
 # notify / retract / ntfy_muted / ntfy_id_safe moved to ntfy/ntfy.lib.sh (sourced at
 # the top), unchanged. Four near-identical copies lived across the repo and had
