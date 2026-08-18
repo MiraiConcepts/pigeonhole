@@ -578,12 +578,12 @@ for rid in "${NEW_IDS[@]:-}"; do
     # Tagged with the record id: the sweep's nudge and its binned note both replace
     # this message rather than stacking beside it.
     if [[ "$bl" != "null" ]]; then
-        notify "Blocked: 1 Document" high warning \
+        notify "Blocked: 1 Document" "" warning \
             "1\. $(md_escape "$(basename "$(jq -r .staged_path "$f")")")
 
 $(reason_text "$bl")" "$(buttons "$rid" 0)" "$rid"
     elif [[ -n "$fl" ]]; then
-        notify "Review: 1 Document" high question \
+        notify "Review: 1 Document" "" question \
             "$(batch_list "$f")
 
 ${fl}" "$(buttons "$rid" 1)" "$rid"
