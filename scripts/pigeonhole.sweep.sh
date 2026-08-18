@@ -174,13 +174,13 @@ for f in "${PROPOSALS_DIR}"/*.json; do
         fi
         if [[ "$bl" != "null" ]]; then
             retract "$id"
-            notify "Pending Blocked: 1 Document" high warning \
+            notify "Pending Blocked: 1 Document" "" warning \
                 "1\. $(md_escape "$(basename "$sp")")
 
 $(reason_text "$bl")" "$(buttons "$id" 0)" "$id"
         elif [[ -n "$fl" ]]; then
             retract "$id"
-            notify "Pending Review: 1 Document" high question \
+            notify "Pending Review: 1 Document" "" question \
                 "$(batch_list "$f")
 
 ${fl}" "$(buttons "$id" 1)" "$id"
