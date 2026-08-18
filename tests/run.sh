@@ -117,12 +117,34 @@ is "staged under the proposed name" "$(ls "${DOCS}/staging")" "2026-07-08_invoic
 is "destination recorded"          "$(propfield .dest_path)" "09_receipts-and-purchases/2026-07-08_invoice_anthropic.pdf"
 
 # THE EXPENSIVE FAILURE. Each of these left a file at root in an earlier draft, and
-# a file at root means the .path unit fires again and buys another opus call.
-for case in "401:fatal API" "503,503,503:exhausted API"; do
-    codes="${case%%:*}"; label="${case#*:}"
+# a file at root means the .path unit fires again and buys another opus call. Draining
+# is therefore asserted for EVERY failure shape, whatever its verdict.
+# `|` separates the sink script from the label because a sink script may itself
+# contain a colon: "403:billing_error" is one argument, not two.
+for case in "401|fatal API" "503,503,503|exhausted API" "403:billing_error|out of credits" "402|no balance"; do
+    codes="${case%%|*}"; label="${case##*|}"
     fresh; mkpdf doc.pdf Invoice; triage "$codes" "$OKPROP"
     is "${label} still drains root" "$(rootn)" "0"
-    is "${label} is recorded blocked" "$(propfield .blocked)" "CLASSIFY_FAILED"
+done
+
+# A TERMINAL failure is blocked: retrying this document cannot help, so a human is
+# the only way forward and the record says so. (propfield strips null lines, so a
+# field that is absent reads as the empty string.)
+fresh; mkpdf doc.pdf Invoice; triage 401 "$OKPROP"
+is "fatal API is recorded blocked" "$(propfield .blocked)" "CLASSIFY_FAILED"
+is "and is not paused"             "$(propfield .paused)"  ""
+
+# A TRANSIENT or PAUSED failure is neither. Until 2026-08-10 these were recorded
+# blocked as well, which was wrong twice over: it told the owner a document needed
+# their attention when it needed none, and nothing ever retried it. `blocked` means a
+# human must act; these need only an API that answers.
+for case in "503,503,503|The API is unreachable" "403:billing_error|Out of credits" "402|Out of credits"; do
+    codes="${case%%|*}"; want="${case##*|}"
+    fresh; mkpdf doc.pdf Invoice; triage "$codes" "$OKPROP"
+    is "${want} (${codes}) is paused, not blocked" "$(propfield .blocked)" ""
+    is "  and names why"               "$(propfield .paused)" "$want"
+    is "  and stamps the clock"        "$([[ "$(propfield .first_failed_at)" == 20*Z ]] && echo yes)" "yes"
+    is "  and keeps its original name" "$(ls "${DOCS}/staging")" "doc.pdf"
 done
 
 fresh; mkpdf doc.pdf Invoice
