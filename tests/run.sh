@@ -446,7 +446,13 @@ is "a slash cannot escape"    "$(ntfy_id_safe 'a/../b')"           'a..b'
 # topic root rather than a message. Emptied here; retract() declines an empty id.
 is "a bare traversal empties" "$(ntfy_id_safe '../..')"            ''
 
-nt="$(sed -n '/^notify() {/,/^}/p' "${SCRIPT_DIR}/pigeonhole.lib.sh")"
+# notify/retract now live in the shared transport, so these read it there. The
+# assertions are unchanged and still earn their place: they are what stops someone
+# "simplifying" X-Sequence-ID to the X-ID ntfy accepts and silently ignores, or
+# dropping the mute seam that keeps a full test run off the live topic — which this
+# suite, running the real triage and apply, learned the expensive way.
+NTFY_LIB="/zpool/catallenya/ntfy/ntfy.lib.sh"
+nt="$(sed -n '/^notify() {/,/^}/p' "$NTFY_LIB")"
 has "notify can carry an id"  "$nt" 'X-Sequence-ID:'
 # X-ID is accepted with a 200 and silently ignored — the message stores no
 # sequence_id and every retract then addresses nothing. Verified against 2.27.0.
@@ -472,7 +478,7 @@ hasnt "but does not police it"             "$apsrc" "BIN_DIR"
 # a test run and the owner's phone. Assert it on both wire calls, and that the
 # suite still sets it — removing either line makes every future run publish for
 # real, and nothing else would notice.
-rt="$(sed -n '/^retract() {/,/^}/p' "${SCRIPT_DIR}/pigeonhole.lib.sh")"
+rt="$(sed -n '/^retract() {/,/^}/p' "$NTFY_LIB")"
 has "notify is muteable"      "$nt" 'ntfy_muted && return 0'
 has "retract is muteable"     "$rt" 'ntfy_muted && return 0'
 has "the suite sets the mute" "$(cat "${BASH_SOURCE[0]}")" 'export NTFY_DISABLE=1'
