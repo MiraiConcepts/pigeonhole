@@ -214,6 +214,10 @@ stage_file() {
     local src="$1" want="$2" stem ext dest n=2
     stem="${want%.*}"; ext="${want##*.}"
     dest="${STAGING_DIR}/${want}"
+    # Already exactly where it belongs — a retry re-staging a document that never
+    # left. Without this the collision loop below treats the file as its own
+    # duplicate and renames it doc-2.pdf, then doc-3.pdf, once per day of the outage.
+    [[ "$src" == "$dest" ]] && { printf '%s' "$dest"; return 0; }
     while [[ -e "$dest" ]]; do dest="${STAGING_DIR}/${stem}-${n}.${ext}"; n=$((n+1)); done
     mv -n -- "$src" "$dest" 2>/dev/null || return 1
     [[ -f "$dest" && ! -e "$src" ]] || return 1
@@ -234,8 +238,35 @@ until docs_quiet; do
     sleep "$QUIET_POLL_S"; waited=$((waited + QUIET_POLL_S))
 done
 
-mapfile -t CANDS < <(list_candidates)
-(( ${#CANDS[@]} )) || { log "nothing at root"; exit 0; }
+# --- the second way in -------------------------------------------------------
+# `--retry` re-runs the classify against documents already sitting in staging/,
+# parked because the API could not answer. They are NOT moved back to the root to be
+# picked up the normal way: the root is a Syncthing folder, so a move out and back
+# would replicate to every device, twice a day, for as long as the outage lasts.
+#
+# Everything below is the same machinery. The loop already works on a path relative
+# to $DOCS, so a staged path drops straight into it; what differs is that a retry
+# UPDATES the record it already has — keeping its id and, critically, its
+# first_failed_at — rather than minting a new one and restarting the seven-day clock.
+RETRY=0
+declare -A RETRY_ID=()
+if [[ "${1:-}" == "--retry" ]]; then
+    RETRY=1; shift
+    CANDS=()
+    for f in "${PROPOSALS_DIR}"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(jq -r '.state  // ""' "$f")" == "staged" ]] || continue
+        [[ "$(jq -r '.paused // "null"' "$f")" == "null" ]] && continue
+        rel="$(jq -r '.at // .staged_path // empty' "$f")"
+        [[ -n "$rel" && -f "${DOCS}/${rel}" ]] || continue
+        CANDS+=("$rel"); RETRY_ID["$rel"]="$(basename "$f" .json)"
+    done
+    (( ${#CANDS[@]} )) || { log "nothing parked"; exit 0; }
+    log "retrying ${#CANDS[@]} parked document(s)"
+else
+    mapfile -t CANDS < <(list_candidates)
+    (( ${#CANDS[@]} )) || { log "nothing at root"; exit 0; }
+fi
 
 # CAP THE RUN. A model call per document, unattended, with no ceiling is a bill
 # waiting to happen — dropping a phone's worth of scans in at once would have spent
@@ -243,12 +274,12 @@ mapfile -t CANDS < <(list_candidates)
 # unit re-fires and the next run takes the next MAX_PER_RUN. Truncation is logged and
 # surfaced in the notification, never silent.
 TRUNCATED=0
-if (( ${#CANDS[@]} > MAX_PER_RUN )); then
+if (( RETRY == 0 )) && (( ${#CANDS[@]} > MAX_PER_RUN )); then
     TRUNCATED=$(( ${#CANDS[@]} - MAX_PER_RUN ))
     log "CAP: ${#CANDS[@]} at root, taking ${MAX_PER_RUN}, deferring ${TRUNCATED} to the next run"
     CANDS=("${CANDS[@]:0:$MAX_PER_RUN}")
 fi
-log "draining ${#CANDS[@]} file(s) from root"
+(( RETRY )) || log "draining ${#CANDS[@]} file(s) from root"
 
 # The filed corpus, hashed, for duplicate detection. 135 files in well under a
 # second, so there is no cache to invalidate and nothing to go stale.
@@ -260,17 +291,32 @@ STAGED=0; BINNED=0; BLOCKED=0; PAUSED=0
 for name in "${CANDS[@]}"; do
     src="${DOCS}/${name}"
     [[ -f "$src" ]] || continue          # vanished under us; nothing to drain
-    id="$(new_uuid)"
+    # In retry mode $name is a path under staging/, so anything that wants a filename
+    # takes $bname. For a root document the two are identical.
+    bname="$(basename "$name")"
+    if (( RETRY )); then
+        id="${RETRY_ID[$name]}"
+    else
+        id="$(new_uuid)"
+    fi
     sha="$(sha256_of "$src")"
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    base="$(jq -nc --arg i "$id" --arg n "$name" --arg s "$sha" --arg t "$now" \
-        '{id:$i, original_name:$n, sha256:$s, staged_at:$t}')"
+    if (( RETRY )); then
+        # Carry the original name, the moment it first arrived and the moment it first
+        # failed. Losing first_failed_at here would restart the seven-day clock on
+        # every retry and the document would never reach day 7.
+        base="$(jq -c '{id, original_name, sha256, staged_at, first_failed_at}' \
+                "${PROPOSALS_DIR}/${id}.json")"
+    else
+        base="$(jq -nc --arg i "$id" --arg n "$bname" --arg s "$sha" --arg t "$now" \
+            '{id:$i, original_name:$n, sha256:$s, staged_at:$t}')"
+    fi
 
     # A byte-identical copy of something already filed. To bin rather than deleted:
     # nothing in this pipeline destroys a document without a tap.
     if [[ -n "${CORPUS_BY_HASH[$sha]:-}" ]]; then
         keeper="${CORPUS_BY_HASH[$sha]#"${DOCS}/"}"
-        if mv -n -- "$src" "${BIN_DIR}/${name}" 2>/dev/null; then
+        if mv -n -- "$src" "${BIN_DIR}/${bname}" 2>/dev/null; then
             BINNED=$((BINNED+1)); log "  DUPE   ${name} == ${keeper} -> bin/"
             record "$id" "$(jq -c --argjson b "$base" --arg k "$keeper" \
                 '$b + {state:"binned", blocked:"DUPLICATE", duplicate_of:$k}' <<<'{}')"
@@ -282,7 +328,7 @@ for name in "${CANDS[@]}"; do
 
     # Unopenable: staged under its ORIGINAL name, never transmitted, no proposal.
     if ! reason="$(openable "$src")"; then
-        if staged="$(stage_file "$src" "$name")"; then
+        if staged="$(stage_file "$src" "$bname")"; then
             BLOCKED=$((BLOCKED+1)); log "  BLOCK  ${name} (${reason}) — not transmitted"
             record "$id" "$(jq -c --argjson b "$base" --arg r "$reason" --arg p "${staged#"${DOCS}/"}" \
                 '$b + {state:"staged", blocked:$r, staged_path:$p}' <<<'{}')"
@@ -293,7 +339,7 @@ for name in "${CANDS[@]}"; do
     fi
 
     if ! pngs="$(rasterise "$src" "${WORK_DIR}/${sha:0:12}")"; then
-        if staged="$(stage_file "$src" "$name")"; then
+        if staged="$(stage_file "$src" "$bname")"; then
             BLOCKED=$((BLOCKED+1)); log "  BLOCK  ${name} (RASTERISE_FAILED) — not transmitted"
             record "$id" "$(jq -c --argjson b "$base" --arg p "${staged#"${DOCS}/"}" \
                 '$b + {state:"staged", blocked:"RASTERISE_FAILED", staged_path:$p}' <<<'{}')"
@@ -318,11 +364,12 @@ for name in "${CANDS[@]}"; do
         # record from its file mtime, which every retry touches, so without a stamp of
         # its own the seven-day clock would restart on every attempt and the item
         # would never reach day 7 — the same defect that got `skip` deleted.
-        if staged="$(stage_file "$src" "$name")"; then
+        if staged="$(stage_file "$src" "$bname")"; then
             PAUSED=$((PAUSED+1)); log "  PAUSE  ${name} — $(ai_reason "$ask_rc")"
             record "$id" "$(jq -c --argjson b "$base" --arg p "${staged#"${DOCS}/"}" \
                 --arg r "$(ai_reason "$ask_rc")" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                '$b + {state:"staged", paused:$r, first_failed_at:$t, staged_path:$p}' <<<'{}')"
+                '$b + {state:"staged", paused:$r, staged_path:$p,
+                       first_failed_at: ($b.first_failed_at // $t)}' <<<'{}')"
         else
             log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
         fi
@@ -330,7 +377,7 @@ for name in "${CANDS[@]}"; do
     elif (( ask_rc != 0 )); then
         # Terminal and per-item: a refusal, a truncated reply, a malformed request.
         # Retrying THIS document cannot help, so it is blocked for a human.
-        if staged="$(stage_file "$src" "$name")"; then
+        if staged="$(stage_file "$src" "$bname")"; then
             BLOCKED=$((BLOCKED+1)); log "  BLOCK  ${name} (CLASSIFY_FAILED)"
             record "$id" "$(jq -c --argjson b "$base" --arg p "${staged#"${DOCS}/"}" \
                 '$b + {state:"staged", blocked:"CLASSIFY_FAILED", staged_path:$p}' <<<'{}')"
@@ -356,7 +403,7 @@ for name in "${CANDS[@]}"; do
     fname="${ddate}_${dtype}"
     [[ "$qual"  != "none" ]] && fname="${fname}_${qual}"
     [[ "$owner" != "self" ]] && fname="${fname}_${owner}"
-    fname="${fname}.${name##*.}"
+    fname="${fname}.${bname##*.}"
     dest="${DOCS}/${folder}/${fname}"
 
     [[ -z "$blocked" ]] && ! under_docs "$dest"        && blocked="ESCAPES_DOCS"
@@ -373,7 +420,7 @@ for name in "${CANDS[@]}"; do
 
     # Stage under the proposed name when we have one, so what you see in staging/ is
     # exactly what accepting will call it — and accepting becomes a plain move.
-    want="$name"; [[ -z "$blocked" || "$blocked" == "DESTINATION_EXISTS" ]] && want="$fname"
+    want="$bname"; [[ -z "$blocked" || "$blocked" == "DESTINATION_EXISTS" ]] && want="$fname"
     if ! staged="$(stage_file "$src" "$want")"; then
         log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
         continue
@@ -400,6 +447,7 @@ log "staged ${STAGED}, blocked ${BLOCKED}, binned ${BINNED}, paused ${PAUSED}"
 # Anything left OVER that number means a branch above returned without moving its
 # file, which is the version that spins forever at an API call per spin.
 left="$(list_candidates | wc -l)"
+(( RETRY )) && left=0     # a retry works in staging/ and never touches the root
 (( left <= TRUNCATED )) \
     || log "  !! $(( left - TRUNCATED )) file(s) STILL AT ROOT beyond the cap — path unit will spin"
 (( TRUNCATED > 0 )) && log "  ${TRUNCATED} deferred; the path unit will re-fire for them"

@@ -1,0 +1,14 @@
+# Base: see systemd/policy/10-base-timer.conf — Persistent= and [Install] come from
+# there and must NOT be repeated here; the gate refuses a unit that re-declares them,
+# because a line that is silently discarded reads as configuration and is a lie.
+[Unit]
+Description=Daily retry for documents parked by an API failure
+
+[Timer]
+# 07:50 SGT: five minutes after pigeonhole.sweep, so anything that reached day 7 has
+# already gone to bin/ and is not sent for one more model call it will never use.
+# Morning-side for the same reason every other intake job is — the outcome ends in a
+# phone notification, and 3am pings train the owner to mute the topic. Timezone
+# pinned rather than inherited; this host runs PDT.
+OnCalendar=*-*-* 07:50:00 Asia/Singapore
+RandomizedDelaySec=2min

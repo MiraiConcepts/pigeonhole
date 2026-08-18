@@ -318,6 +318,60 @@ is "batch empties staging"           "$(ls "${DOCS}/staging" | wc -l)" "0"
 has "a stale member is not an error" "$(cat "${TMP}/bout")" "refused 0"
 is "batch drains its marker"         "$(markers)" "0"
 
+# ------------------------------------------------------------ parked / retry
+# A document parked by an API failure is not a proposal: it has no dest_path, no
+# buttons and nothing for the owner to decide. It is retried once a day through the
+# triage's side door and binned at seven days, and the clock is first_failed_at,
+# written once — NOT the record mtime, which every retry touches.
+echo "parked documents"
+
+retry() { # $1=sink codes; $2..=payloads -> runs the triage's --retry side door
+    local codes="$1"; shift
+    : > "${TMP}/port"
+    python3 "$SINK" "$codes" "$@" > "${TMP}/port" &
+    SINK_PID=$!
+    for _ in $(seq 20); do [[ -s "${TMP}/port" ]] && break; sleep 0.2; done
+    DOCS="${TMP}/docs" STATE_DIR="${TMP}/state" SKIP_SYNCTHING_GATE=1 \
+      API_URL="http://127.0.0.1:$(cat "${TMP}/port")/" ANTHROPIC_API_KEY=sink \
+      API_RETRY_BASE_S=1 PIGEONHOLE_REVERSE_PROXY_PORT=1 \
+      bash "${SCRIPT_DIR}/pigeonhole.triage.sh" --retry >"${TMP}/out" 2>&1
+    kill "$SINK_PID" 2>/dev/null; wait "$SINK_PID" 2>/dev/null; SINK_PID=""
+}
+
+# Park one, then let the side door find it.
+fresh; mkpdf doc.pdf Invoice; triage 402 "$OKPROP"
+is "parked, not blocked"        "$(propfield .paused)" "Out of credits"
+ff0="$(propfield .first_failed_at)"
+is "and it is in staging"       "$(ls "${DOCS}/staging")" "doc.pdf"
+
+# Retry while the API is still down: nothing resolves, and — the load-bearing part —
+# the clock does NOT move. If first_failed_at were rewritten here the seven days
+# would restart on every attempt and the document would never reach day 7.
+retry 402 "$OKPROP"
+is "still parked after a failed retry" "$(propfield .paused)" "Out of credits"
+is "the clock did not move"            "$(propfield .first_failed_at)" "$ff0"
+is "and the file did not move"         "$(ls "${DOCS}/staging")" "doc.pdf"
+
+# Retry once the API is back: the document becomes an ordinary proposal, renamed in
+# place, with no trace of having been parked.
+retry 200 "$OKPROP"
+is "a recovered document is no longer paused" "$(propfield .paused)" ""
+is "and gets its proposed name"               "$(ls "${DOCS}/staging")" "2026-07-08_invoice_anthropic.pdf"
+is "and a destination"                        "$(propfield .dest_path)" "09_receipts-and-purchases/2026-07-08_invoice_anthropic.pdf"
+# A recovered document also mints a batch record, correctly — count only proposals.
+is "and keeps its record id"                  "$(jq -s '[.[] | select(.kind != "batch")] | length' "${TMP}"/state/proposals/*.json)" "1"
+
+# The side door must never touch the root — that is the whole reason it exists.
+fresh; mkpdf doc.pdf Invoice; triage 402 "$OKPROP"
+retry 402 "$OKPROP"
+is "the root stays empty during a retry" "$(rootn)" "0"
+
+# And with nothing parked it is a no-op, not an error: the timer fires daily whether
+# or not anything is waiting.
+fresh
+retry 200 "$OKPROP"
+has "nothing parked is a clean exit" "$(cat "${TMP}/out")" "nothing parked"
+
 # --------------------------------------------------------------------- sweep
 # Nightly lifecycle: one nudge at 24h, bin at 7d, bin never emptied. Ages come
 # from the record file's mtime, so backdating it is the whole test harness.

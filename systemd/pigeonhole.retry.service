@@ -1,0 +1,50 @@
+# Class: scheduled  (see systemd/policy/20-scheduled.conf)
+# Family: intake    (see systemd/policy/30-intake.conf)
+# Base:             (see systemd/policy/10-base.conf)
+#
+# Inherited and therefore NOT repeated here: OnFailure, Type, journal logging, the
+# base hardening, the intake sandbox and its three InaccessiblePaths, and
+# Environment=PATH.
+#
+# WHY THIS IS A JOB AND NOT A BRANCH OF THE SWEEP. A document parked by an API
+# failure has to be re-classified, which costs a model call. pigeonhole.sweep.service
+# deliberately holds no key, so it cannot make that call and must not be given the
+# ability to — it moves files and posts to ntfy, and nothing it does should be able
+# to spend money. afterimage has no equivalent job because its sweep retries by
+# moving a screenshot back into incoming/, where the .path unit picks it up; the
+# document root is a Syncthing folder, so the same trick would replicate the move to
+# every device, twice a day, for as long as the outage lasts.
+#
+# Being a unit rather than a subprocess also buys the completion stamp: if this stops
+# running, the watchdog says so. A retry folded into the sweep would fail silently.
+
+[Unit]
+Description=Documents retry (re-classify documents parked by an API failure)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=carrein
+Group=carrein
+WorkingDirectory=/zpool/catallenya/pigeonhole/intake-state
+Environment=HOME=/home/carrein
+# Same ceiling as the triage: MAX_PER_RUN documents, each a vision call at high
+# effort, and a parked backlog is exactly when several are queued at once.
+TimeoutStartSec=30min
+
+# Root-owned 0600, injected into this User=carrein process for the life of the run
+# and gone when it exits — the same handling the triage gets, and the reason neither
+# key ever reaches a container environment.
+EnvironmentFile=/etc/ai.env
+
+ExecStart=/zpool/catallenya/pigeonhole/scripts/pigeonhole.triage.sh --retry
+
+ReadWritePaths=/zpool/catallenya/syncthing/data/master/documents
+ReadWritePaths=/zpool/catallenya/pigeonhole/intake-state
+
+[X-Catallenya]
+Class=scheduled
+Family=intake
+# Daily at 07:50 SGT. 36h allows one missed run.
+MaxAge=36h
+Freshness=stamp:/zpool/catallenya/systemd/state/pigeonhole.retry
