@@ -336,8 +336,8 @@ batch_list() {
 # every device, bin/ is never emptied, and ZFS snapshots sit behind both.
 buttons() { # $1=id $2=1 if the Accept button should be offered
     local id="$1" b=""
-    [[ "$2" == "1" ]] && b="http, Accept, ${BASE}/pigeonhole/${id}/accept, method=POST, headers.X-Documents=1; "
-    printf '%shttp, Discard, %s/pigeonhole/%s/discard, method=POST, headers.X-Documents=1' \
+    [[ "$2" == "1" ]] && b="http, Accept, ${BASE}/pigeonhole/${id}/accept, method=POST, headers.X-Pigeonhole=1; "
+    printf '%shttp, Discard, %s/pigeonhole/%s/discard, method=POST, headers.X-Pigeonhole=1' \
         "$b" "$BASE" "$id"
 }
 
@@ -353,8 +353,8 @@ buttons() { # $1=id $2=1 if the Accept button should be offered
 # restic, which is the actual recovery path for a mis-tap.
 bin_buttons() { # $1=id $2=1 if the Accept button should be offered
     local id="$1" b=""
-    [[ "$2" == "1" ]] && b="http, Accept, ${BASE}/pigeonhole/${id}/accept, method=POST, headers.X-Documents=1; "
-    printf '%shttp, Delete, %s/pigeonhole/%s/delete, method=POST, headers.X-Documents=1' \
+    [[ "$2" == "1" ]] && b="http, Accept, ${BASE}/pigeonhole/${id}/accept, method=POST, headers.X-Pigeonhole=1; "
+    printf '%shttp, Delete, %s/pigeonhole/%s/delete, method=POST, headers.X-Pigeonhole=1' \
         "$b" "$BASE" "$id"
 }
 

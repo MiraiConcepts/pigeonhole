@@ -387,7 +387,7 @@ left="$(list_candidates | wc -l)"
 # becomes one you swipe away without reading. The batch's tail line names how many
 # are sitting there, so nothing is invisible.
 
-# The X-Documents header is required by the container on every route. It is not
+# The X-Pigeonhole header is required by the container on every route. It is not
 # authentication — it forces a CORS preflight so a stray browser tab cannot fire
 # these callbacks.
 #

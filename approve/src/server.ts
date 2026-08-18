@@ -24,7 +24,7 @@ import { writeFile, rename, mkdir } from "node:fs/promises";
 
 const DIR = process.env.APPROVALS_DIR ?? "/approvals";
 const PORT = Number(process.env.DOCUMENTS_PORT ?? 8080);
-// The ONE browser origin allowed to satisfy the X-Documents preflight. The ntfy web
+// The ONE browser origin allowed to satisfy the X-Pigeonhole preflight. The ntfy web
 // UI taps buttons via browser fetch, so CORS applies to it; the phone app does
 // native HTTP and never sees this. Any other page is still refused.
 const NTFY_ORIGIN = process.env.NTFY_ORIGIN ?? "";
@@ -88,13 +88,13 @@ Bun.serve({
         headers: {
           "access-control-allow-origin": origin,
           "access-control-allow-methods": "POST",
-          "access-control-allow-headers": "X-Documents, Content-Type",
+          "access-control-allow-headers": "X-Pigeonhole, Content-Type",
           "access-control-max-age": "86400",
         },
       });
     }
 
-    const m = url.pathname.match(/^\/documents\/([^/]+)\/([a-z]+)\/?$/);
+    const m = url.pathname.match(/^\/pigeonhole\/([^/]+)\/([a-z]+)\/?$/);
     if (!m) return json({ error: "not found" }, 404);
 
     // Required on every route. This is NOT authentication — anyone who can read the
@@ -104,8 +104,8 @@ Bun.serve({
     // cross-origin, and the .ts.net hostname is in Certificate Transparency logs
     // rather than secret. Requiring a custom header forces a preflight this server
     // answers for exactly one origin.
-    if (req.headers.get("x-documents") !== "1") {
-      return json({ error: "missing x-documents header" }, 403);
+    if (req.headers.get("x-pigeonhole") !== "1") {
+      return json({ error: "missing x-pigeonhole header" }, 403);
     }
 
     const [, id, action] = m;
