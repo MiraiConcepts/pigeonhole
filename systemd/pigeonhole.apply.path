@@ -1,5 +1,5 @@
 [Unit]
-Description=Watch for documents approval markers
+Description=Watch for pigeonhole approval markers
 After=zfs-mount.service
 Requires=zfs-mount.service
 

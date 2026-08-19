@@ -23,7 +23,7 @@
 import { writeFile, rename, mkdir } from "node:fs/promises";
 
 const DIR = process.env.APPROVALS_DIR ?? "/approvals";
-const PORT = Number(process.env.DOCUMENTS_PORT ?? 8080);
+const PORT = Number(process.env.PIGEONHOLE_PORT ?? 8080);
 // The ONE browser origin allowed to satisfy the X-Pigeonhole preflight. The ntfy web
 // UI taps buttons via browser fetch, so CORS applies to it; the phone app does
 // native HTTP and never sees this. Any other page is still refused.

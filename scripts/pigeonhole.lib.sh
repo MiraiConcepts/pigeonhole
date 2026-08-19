@@ -1,7 +1,7 @@
 #!/bin/bash
 # shellcheck disable=SC2034  # config vars are consumed by the scripts that source this
-# Shared helpers for the documents pipeline.
-# Sourced by documents.{triage,apply}.sh — not executable on its own.
+# Shared helpers for the pigeonhole documents pipeline.
+# Sourced by pigeonhole.{triage,apply,sweep}.sh — not executable on its own.
 #
 # Scope is ROOT FILES ONLY. The numbered folders are the filed corpus and are only
 # ever hashed for duplicate detection, never read, renamed or moved — so a nightly
@@ -47,7 +47,11 @@ STAGING_DIR="${DOCS}/staging"
 BIN_DIR="${DOCS}/bin"
 # The records stay OUT of the synced folder — they are machinery, not documents,
 # and STATE_DIR is not a restic target. approvals/ is the only directory the
-# approval container can write, and it holds nothing but zero-byte markers.
+# approval container can write, and a marker is the smallest possible thing:
+# {"action":…,"at":…} and nothing else. The security property is not that the file
+# is empty — pigeonhole.apply.sh READS the action out of it — it is that the marker
+# carries NO PATH. The container names an id and a verb; where that document is and
+# where it may go are read from the record the triage wrote.
 PROPOSALS_DIR="${STATE_DIR}/proposals"
 APPROVALS_DIR="${STATE_DIR}/approvals"
 
@@ -81,6 +85,20 @@ under_docs() { # $1 = candidate absolute path
     [[ "$real" == "${DOCS}/"* ]]
 }
 
+# The same check for the OTHER destination a model-derived name reaches: staging/.
+# under_docs is not a substitute — staging/ is itself under DOCS, so a name that
+# walks out of staging/ and lands at the DOCS ROOT passes under_docs cleanly, and
+# the root is the one directory in this tree that must never receive a write: the
+# path unit fires on it, so a document that lands there re-triages itself forever
+# at one model call per fire. That is exactly what a `date` of "../0801" did
+# (2026-08-19) — through a valid_date arm that checked two characters of a
+# seven-character string and never looked at the other five.
+under_staging() { # $1 = candidate absolute path
+    local real
+    real="$(realpath -m -- "$1" 2>/dev/null)" || return 1
+    [[ "$real" == "${STAGING_DIR}/"* ]]
+}
+
 new_uuid() { cat /proc/sys/kernel/random/uuid; }
 
 # A real calendar date, at any of the three precisions the schema admits. The regex
@@ -91,12 +109,26 @@ new_uuid() { cat /proc/sys/kernel/random/uuid; }
 # returns success — so that arm is an explicit range. 10# forces base ten, or an
 # unprefixed 0009 is invalid octal and aborts the arithmetic instead of failing the
 # check. Upper bound allows next year: renewals and policies are dated ahead.
+#
+# EVERY ARM ANCHORS THE WHOLE STRING, and that is the load-bearing part. This value
+# is spliced straight into a filename, so a date is a path component whether or not
+# it looks like one. Until 2026-08-19 the arms were selected by LENGTH and then
+# checked a substring: the 7-char arm read characters 5-6 and nothing else, so
+# "../0801" passed (its "08" is a valid month) and staged the document at the DOCS
+# root; the 10-char arm was a bare `date -d`, which happily parses "01/02/2003".
+# The switch on length stays — it is what picks the precision — but no arm may now
+# accept a character it has not looked at.
 valid_date() { # $1 = YYYY | YYYY-MM | YYYY-MM-DD
-    local dt="$1"
+    # LC_ALL=C for the same reason valid_segment sets it: [0-9] under a UTF-8
+    # collation is not the ASCII digits, and a check that depends on the caller's
+    # environment is a bug whichever way it errs.
+    local dt="$1" LC_ALL=C
     case "${#dt}" in
-        10) date -d "$dt" >/dev/null 2>&1 ;;
-        7)  [[ "${dt:5:2}" =~ ^(0[1-9]|1[0-2])$ ]] ;;
-        4)  (( 10#$dt >= 1900 && 10#$dt <= $(date +%Y) + 1 )) ;;
+        10) [[ "$dt" =~ ^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$ ]] \
+                && date -d "$dt" >/dev/null 2>&1 ;;
+        7)  [[ "$dt" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] ;;
+        4)  [[ "$dt" =~ ^[0-9]{4}$ ]] \
+                && (( 10#$dt >= 1900 && 10#$dt <= $(date +%Y) + 1 )) ;;
         *)  return 1 ;;
     esac
 }
@@ -190,6 +222,78 @@ list_corpus() {
 
 sha256_of() { sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1; }
 
+# --- records and destinations ----------------------------------------------
+
+# bin_dest <current-path> -> where this document goes in bin/, never clobbering.
+#
+# THREE different paths move a document to bin/ — a Discard tap, a week untouched in
+# staging, a week parked behind a dead API — and they must agree, because the record
+# stores where the file LANDED and every later tap reads that back. A name already
+# taken gets a UTC timestamp prefix. Two documents can legitimately share a name (the
+# same statement re-downloaded, a scan repeated), and the one thing this pipeline
+# must never do is lose one to a silent overwrite.
+bin_dest() {
+    local base dest
+    base="$(basename "$1")"
+    dest="${BIN_DIR}/${base}"
+    [[ -e "$dest" ]] && dest="${BIN_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${base}"
+    printf '%s' "$dest"
+}
+
+# staged_class <record-file> -> clean | flagged | blocked | paused | "" (not staged)
+#
+# The ONE predicate that says what a staged record is, because two callers disagreeing
+# about it is a real defect rather than a tidiness point: the triage decides which
+# bucket a proposal is notified in, and the sweep decides which proposals a re-batch
+# rebuilds from. When the sweep's copy drifted to "only the overdue ones", the
+# replacement message silently dropped every clean proposal that was not yet 24h old.
+#
+# ORDER MATTERS. paused outranks blocked outranks flagged: a parked document has no
+# proposal at all, so offering it an Accept button would be offering a decision that
+# was never made.
+staged_class() {
+    local f="$1"
+    [[ "$(jq -r '.state // ""' "$f" 2>/dev/null)" == "staged" ]] || return 0
+    [[ "$(jq -r '.kind  // ""' "$f")" == "batch"  ]] && return 0
+    [[ "$(jq -r '.paused  // "null"' "$f")" != "null" ]] && { printf paused;  return 0; }
+    [[ "$(jq -r '.blocked // "null"' "$f")" != "null" ]] && { printf blocked; return 0; }
+    [[ "$(jq -r '.flags | length' "$f")" != "0" ]]       && { printf flagged; return 0; }
+    printf clean
+}
+
+# retire_batches — mark every live batch record `superseded`.
+#
+# A batch is a SNAPSHOT of what was staged when its notification went out, so once a
+# newer one exists the old record is only useful if you tap its (still-live) message,
+# which apply re-verifies member by member anyway. Without this they accumulate one
+# per run forever and nothing distinguishes the live batch from its predecessors.
+# Called by the triage and by the sweep, immediately before each mints its own.
+retire_batches() {
+    local old
+    for old in "${PROPOSALS_DIR}"/*.json; do
+        [[ -f "$old" ]] || continue
+        [[ "$(jq -r '.kind  // ""' "$old")" == "batch"  ]] || continue
+        [[ "$(jq -r '.state // ""' "$old")" == "staged" ]] || continue
+        jq -c '. + {state:"superseded"}' "$old" > "${old}.tmp" && mv "${old}.tmp" "$old"
+    done
+}
+
+# notif_id <record-file> -> the ntfy sequence id the message carrying this record's
+# buttons was published under.
+#
+# A solo proposal's message rides its own record id. The BATCH message rides
+# BATCH_NTFY_ID, because there is only ever one live batch and each new one has to
+# withdraw the last without looking up which id that was — which means a tap on a
+# batch must withdraw that literal too. It used to retract the batch RECORD's uuid,
+# an id nothing was ever published under, so every batch notification survived the
+# tap that emptied it and its Accept button then answered "No such proposal."
+notif_id() {
+    local f="$1"
+    [[ "$(jq -r '.kind // ""' "$f" 2>/dev/null)" == "batch" ]] \
+        && { printf '%s' "$BATCH_NTFY_ID"; return 0; }
+    printf '%s' "$(basename "$f" .json)"
+}
+
 # --- seen.json --- REMOVED 2026-07-31
 # The whole family (seen_init/get/has/put/gc/age_days) existed because the nightly
 # re-scanned a root that kept its files: without memoisation one stuck document cost
@@ -232,7 +336,7 @@ _load_env() {
 # every component is asserted because an unset var yields a syntactically valid but
 # dead URL ("https://host.ts.net:") and the buttons then fail silently on tap —
 # exactly the bug capture shipped and caught only in live testing.
-documents_base_url() {
+pigeonhole_base_url() {
     _load_env || return 1
     [[ -n "${TAILNET_DOMAIN:-}" && -n "${TAILNET_DNS_NAME:-}" ]] || {
         log "TAILNET_DOMAIN/TAILNET_DNS_NAME unset in .env"; return 1; }
@@ -320,7 +424,7 @@ batch_list() {
 }
 
 # buttons <id> <1|0 offer-Accept> — the Actions header for a STAGED proposal.
-# Reads $BASE, which the caller sets from documents_base_url (not passed per call:
+# Reads $BASE, which the caller sets from pigeonhole_base_url (not passed per call:
 # every caller resolves it once per run, and the triage's call sites predate this
 # function living here). A blocked record is offered no Accept.
 #
@@ -365,6 +469,12 @@ bin_buttons() { # $1=id $2=1 if the Accept button should be offered
 # batch record that is not `superseded`, and giving it a fixed id lets each new
 # batch withdraw the last one without having to look up which id that was.
 # Per-topic, so it cannot collide with anything outside this pipeline.
+#
+# DO NOT RENAME IT to match the pipeline's own rename. The value is not a label, it
+# is the address of a message that may be on the phone right now: change it and the
+# live batch notification becomes unaddressable — nothing can ever withdraw it, and
+# it sits there listing documents that have all moved on. The one word left saying
+# "documents" here is load-bearing for exactly that reason.
 BATCH_NTFY_ID="documents-batch"
 # The paused message is one-per-topic, not one-per-document: a stable literal, so the
 # next run retracts the previous one and republishes with the new count rather than
@@ -372,15 +482,54 @@ BATCH_NTFY_ID="documents-batch"
 # one fact, and it should read as one.
 PAUSED_NTFY_ID="pigeonhole-paused"
 
+# sync_paused_summary — the one "Paused: N Documents" message for this topic, rebuilt
+# from the records and reconciled with what is on the phone.
+#
+# Called UNCONDITIONALLY at the end of any run that could have changed the paused set
+# (both ways into the triage, and the sweep after it bins the ones that ran out of
+# time). paused_sync retracts first and publishes only if anything is left, so the run
+# that RESOLVES an outage is the run that takes the count off the phone. That used to
+# be the one run that could not: the retract lived INSIDE the "something is paused"
+# branch, so a recovered pipeline left "Paused: 3 Documents" sitting there forever,
+# naming documents that had long since been filed.
+#
+# The reason is the most recently parked STAGED record's. Reading `.paused` from every
+# record in glob order took whichever uuid sorted last — effectively at random — and
+# counted records that had since been binned, so the message could report an outage
+# that was over while a different one was running.
+sync_paused_summary() {
+    # LC_ALL=C so the timestamp comparison below is byte order, not collation order.
+    local f ff reason="" newest="" LC_ALL=C
+    local -a items=()
+    for f in "${PROPOSALS_DIR}"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(staged_class "$f")" == "paused" ]] || continue
+        items+=("$(basename "$(jq -r '.at // .staged_path // .original_name' "$f")")")
+        ff="$(jq -r '.first_failed_at // ""' "$f")"
+        if [[ -z "$reason" || "$ff" > "$newest" ]]; then
+            newest="$ff"; reason="$(jq -r '.paused' "$f")"
+        fi
+    done
+    # Five fixed slots, then the items; with none it is a bare retract. The outcome
+    # clause is pigeonhole's own — a parked document survives in bin/, which is not
+    # true of afterimage's screenshots, and flattening that would make the message
+    # consistent by hiding the part you most need to know.
+    paused_sync "$PAUSED_NTFY_ID" Document "${reason:-The API is unavailable}" \
+        "moved to bin/ in 7 days, nothing is deleted" "${items[@]}"
+}
+
 # notify / retract / ntfy_muted / ntfy_id_safe moved to ntfy/ntfy.lib.sh (sourced at
 # the top), unchanged. Four near-identical copies lived across the repo and had
 # already drifted — two had no --max-time, one had no hdr_safe.
 #
 # What stays pigeonhole's own is the retraction POLICY, which is not symmetric with
-# afterimage. A pigeonhole notification is the UNDO HANDLE (see buttons()), so it may
-# only be withdrawn when the message replacing it carries the same buttons — the
-# nudge and the binned note both do. Nothing withdraws a notification on a tap; that
-# would delete the handle.
+# afterimage's. THE RULE: a notification lives exactly as long as its decision is
+# outstanding. A tap withdraws its own message — but only when nothing was refused
+# (see the drain loop in pigeonhole.apply.sh), because a refused tap moved nothing
+# and those buttons are still the way to act on the document. That conditional is
+# what makes a message's disappearance mean "it happened" rather than "you tapped".
+# A message REPLACED rather than resolved — the 24h nudge, the binned note — is
+# withdrawn only by a replacement carrying the same buttons, so the handle survives.
 #
 # `id` is an ntfy sequence id. Tag anything a later message will supersede: solo
-# proposals with the RECORD id, batches with $BATCH_NTFY_ID.
+# proposals with the RECORD id, batches with $BATCH_NTFY_ID (see notif_id).

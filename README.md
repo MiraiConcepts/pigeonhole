@@ -108,8 +108,11 @@ This pipeline's sibling, [afterimage](https://github.com/MiraiConcepts/afterimag
 runs a container that holds a full-scope calendar credential and performs the write
 itself. This one is the opposite by design:
 
-- The approval container can do exactly one thing: write a **zero-byte marker** into
-  an approvals directory. It holds no secret, and mounts nothing else.
+- The approval container can do exactly one thing: write a marker naming an id and an
+  action into an approvals directory. It holds no secret, and mounts nothing else.
+  What makes the marker safe is not that it is small — the mover reads the action out
+  of it — but that it **carries no path**: the container can say *this proposal was
+  accepted*, and cannot say which file that is or where it goes.
 - The moves are performed by hardened host oneshots that no network packet can reach.
 
 They look like one container's worth of code, and merging them would hand the

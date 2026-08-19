@@ -159,8 +159,9 @@ apply_one() {
 
       discard)
         [[ "$st" == "binned" ]] && return 0
-        dest="${BIN_DIR}/$(basename "$cur")"
-        [[ -e "$dest" ]] && dest="${BIN_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$cur")"
+        # bin_dest, shared with the sweep's two binning passes: all three agree on
+        # what a name collision in bin/ becomes, and the record stores the answer.
+        dest="$(bin_dest "$cur")"
         if move_verified "$cur" "$dest" "$sha"; then
             BINNED=$((BINNED+1)); log "  BINNED ${dest#"${DOCS}/"}"
             jq -c --arg at "${dest#"${DOCS}/"}" '. + {state:"binned", at:$at}' <<<"$rec" > "$f"
@@ -208,6 +209,12 @@ for mk in "${markers[@]}"; do
     # in a later edit. The action is already in hand; losing the file loses nothing.
     rm -f "$mk"
     [[ -n "$action" ]] || { log "  !! unreadable marker ${id:0:8} — dropped"; continue; }
+    # WHICH MESSAGE this tap came from, resolved BEFORE the move rewrites the record.
+    # A batch's message rides BATCH_NTFY_ID, never the batch record's uuid, so
+    # retracting "$id" for one addressed an id nothing was ever published under: the
+    # batch notification survived the tap that emptied it, and its Accept button then
+    # answered "No such proposal." for every document it listed.
+    nid="$(notif_id "${PROPOSALS_DIR}/${id}.json")"
     before=$REFUSED
     apply_one "$id" "$action"
     # Withdraw the notification this tap came from — but ONLY if the action actually
@@ -218,7 +225,7 @@ for mk in "${markers[@]}"; do
     # Comparing the REFUSED counter is deliberate: apply_one reports failure by
     # incrementing it, not by a return code, and a batch that refuses one member of
     # five must not withdraw the notification covering the other four.
-    (( REFUSED == before )) && retract "$id"
+    (( REFUSED == before )) && retract "$nid"
 done
 
 log "filed ${FILED}, binned ${BINNED}, deleted ${DELETED}, refused ${REFUSED}"
@@ -249,8 +256,13 @@ ${pad}${line#* — }
 "
         fi
     done <<<"$REFUSALS"
+    # Default priority, like every other notification in this repo. This was the last
+    # `high` left anywhere in it, and it was the wrong place for one twice over: a
+    # refusal is a thing you tapped and can tap again, not an emergency, and
+    # everything-shouts is how a topic gets muted — after which the loud messages are
+    # the first thing lost. Urgency belongs in what the message says.
     notify "Refused: ${REFUSED} Document$( (( REFUSED == 1 )) || printf s )" \
-        high warning "$body"
+        "" warning "$body"
 fi
 
 left="$(find "$APPROVALS_DIR" -maxdepth 1 -name '*.json' | wc -l)"

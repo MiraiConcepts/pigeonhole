@@ -7,7 +7,7 @@
 # Environment=PATH.
 
 [Unit]
-Description=Documents sweep (re-notify stale proposals, bin week-old ones)
+Description=Pigeonhole sweep (re-notify stale proposals, bin week-old ones)
 After=network-online.target
 Wants=network-online.target
 

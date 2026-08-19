@@ -219,6 +219,14 @@ stage_file() {
     # duplicate and renames it doc-2.pdf, then doc-3.pdf, once per day of the outage.
     [[ "$src" == "$dest" ]] && { printf '%s' "$dest"; return 0; }
     while [[ -e "$dest" ]]; do dest="${STAGING_DIR}/${stem}-${n}.${ext}"; n=$((n+1)); done
+    # THE LAST LAYER, and the only one that guards the WRITE rather than a value.
+    # `want` is assembled from model output, so a single component that walks up a
+    # directory ("../0801") turns this line into a move to the DOCS ROOT — where the
+    # path unit sees the file, fires this script, and buys a model call per spin.
+    # valid_date and valid_segment both have to fail for that to be reachable, and on
+    # 2026-08-19 both did. Checked after the collision loop, because the loop rebuilds
+    # the path from `stem` and would carry an escape straight through.
+    under_staging "$dest" || { log "  !! ${want} does not resolve inside staging/"; return 1; }
     mv -n -- "$src" "$dest" 2>/dev/null || return 1
     [[ -f "$dest" && ! -e "$src" ]] || return 1
     printf '%s' "$dest"
@@ -261,7 +269,12 @@ if [[ "${1:-}" == "--retry" ]]; then
         [[ -n "$rel" && -f "${DOCS}/${rel}" ]] || continue
         CANDS+=("$rel"); RETRY_ID["$rel"]="$(basename "$f" .json)"
     done
-    (( ${#CANDS[@]} )) || { log "nothing parked"; exit 0; }
+    # Nothing parked is the HEALTHY end of an outage, and it is also the run that has
+    # to say so: the paused summary is withdrawn from here, not just from the bottom
+    # of a full run. Without this the last document to recover took its record out of
+    # the paused set and then the script exited above the only line that tells the
+    # phone — leaving "Paused: 1 Document" naming a document already filed.
+    (( ${#CANDS[@]} )) || { log "nothing parked"; sync_paused_summary; exit 0; }
     log "retrying ${#CANDS[@]} parked document(s)"
 else
     mapfile -t CANDS < <(list_candidates)
@@ -396,7 +409,12 @@ for name in "${CANDS[@]}"; do
     ddate="$(jq -r .date <<<"$prop")"
     blocked=""; flags=()
 
-    for seg in "$folder" "$dtype" "$qual"; do
+    # owner is in this loop even though the schema declares it an enum. The schema is
+    # the API's promise, not this box's check: ai_extract parses the reply as JSON and
+    # never validates it against the schema it asked for, so `owner` is exactly as
+    # trusted as the three free-text fields — and it is spliced into the filename the
+    # same way. A field that reaches a path gets checked here, whatever its type says.
+    for seg in "$folder" "$dtype" "$qual" "$owner"; do
         valid_segment "$seg" || { blocked="BAD_SEGMENT"; break; }
     done
 
@@ -422,8 +440,19 @@ for name in "${CANDS[@]}"; do
     # exactly what accepting will call it — and accepting becomes a plain move.
     want="$bname"; [[ -z "$blocked" || "$blocked" == "DESTINATION_EXISTS" ]] && want="$fname"
     if ! staged="$(stage_file "$src" "$want")"; then
-        log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
-        continue
+        # Fall back to the ORIGINAL name before giving up. A proposed name this
+        # refuses is a problem with the proposal, not with the filesystem, and the
+        # expensive half of that bug was never the bad name — it was the document
+        # left at the root afterwards, re-firing the path unit at a model call per
+        # spin. Staging it under the name it arrived with keeps the drain invariant
+        # and hands the owner a document with no Accept button, which is the right
+        # outcome for a proposal that could not even be written down.
+        blocked="BAD_SEGMENT"
+        if ! staged="$(stage_file "$src" "$bname")"; then
+            log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
+            continue
+        fi
+        log "  !! refused the proposed name for ${name}; staged as ${bname}"
     fi
 
     record "$id" "$(jq -c --argjson b "$base" --argjson p "$prop" \
@@ -476,44 +505,55 @@ left="$(list_candidates | wc -l)"
 # notification already did the same thing, and Accept/Discard stopped being an undo
 # pair because keeping a notification alive after a tap meant every filed document
 # left one behind forever. Two buttons, one outcome each.
+
+# --- paused: one message per topic, whatever the count -----------------------
+# Built from everything currently paused, not just this run — the same rule the batch
+# follows. Twelve documents stuck behind one outage is one fact, and a ping per
+# document would be twelve notifications with identical text and nothing to tap.
+#
+# FIRST, and deliberately above the base-URL gate below: this message carries no
+# buttons, so it needs no base URL, and it is the one message that must still go out
+# on the run where notifications are otherwise impossible. Unconditional, so the run
+# that ends an outage is the run that clears the summary — see sync_paused_summary.
+sync_paused_summary
+
 # buttons() moved to pigeonhole.lib.sh — the sweep sends the same buttons on
 # its re-notify and final-note messages, and two copies of an Actions string is how
 # one of them drifts. BASE is what it reads.
 # shellcheck disable=SC2034  # consumed by buttons() in pigeonhole.lib.sh
-if ! BASE="$(documents_base_url)"; then
+if ! BASE="$(pigeonhole_base_url)"; then
+    # EXIT 1, matching the sweep. The classification work is already done and every
+    # document is safely staged, so this is not a lost run — but it is a run whose
+    # proposals nobody was told about, and exiting 0 would write a completion stamp
+    # and report a healthy job while documents piled up in staging unannounced. A
+    # non-zero exit costs nothing here and fires OnFailure=.
     log "  !! no base URL — proposals are staged but no notification was sent"
-    exit 0
+    log "     (check TAILNET_DOMAIN, TAILNET_DNS_NAME and"
+    log "      PIGEONHOLE_REVERSE_PROXY_PORT in .env)"
+    exit 1
 fi
 
 # Everything still staged, partitioned. jq per file rather than one slurp: the
 # directory is small and a malformed record should cost one document, not the run.
+# staged_class() is the predicate — shared with the sweep's re-batch, which used to
+# carry its own copy and drifted.
 clean=(); flagged=(); blocked_ids=()
 for f in "${PROPOSALS_DIR}"/*.json; do
     [[ -f "$f" ]] || continue
-    [[ "$(jq -r '.state // ""' "$f")" == "staged" ]] || continue
-    [[ "$(jq -r '.kind  // ""' "$f")" == "batch"  ]] && continue
-    # A paused record has no proposal to accept, so it belongs in none of the three
-    # buckets below — without this it would fall through to `clean` and be offered an
-    # Accept button for a filing decision that was never made.
-    [[ "$(jq -r '.paused // "null"' "$f")" != "null" ]] && continue
     rid="$(basename "$f" .json)"
-    if [[ "$(jq -r '.blocked // "null"' "$f")" != "null" ]]; then blocked_ids+=("$rid")
-    elif [[ "$(jq -r '.flags | length' "$f")" != "0" ]];        then flagged+=("$rid")
-    else clean+=("$rid"); fi
+    # `paused` and the empty class both fall through: a parked record has no proposal
+    # to accept, so offering it an Accept button would offer a decision nothing made.
+    case "$(staged_class "$f")" in
+        blocked) blocked_ids+=("$rid") ;;
+        flagged) flagged+=("$rid") ;;
+        clean)   clean+=("$rid") ;;
+    esac
 done
 
 if (( ${#clean[@]} )); then
-    # Retire the previous batch records first. A batch is a snapshot of what was
-    # staged when the notification went out, so once a newer one exists the old one
-    # is only useful if you tap its (still-live) message — which re-verification
-    # already handles member by member. Without this they accumulate one per run
-    # forever, and nothing distinguishes a live batch from a superseded one.
-    for old in "${PROPOSALS_DIR}"/*.json; do
-        [[ -f "$old" ]] || continue
-        [[ "$(jq -r '.kind // ""' "$old")" == "batch" ]] || continue
-        [[ "$(jq -r '.state // ""' "$old")" == "staged" ]] || continue
-        jq -c '. + {state:"superseded"}' "$old" > "${old}.tmp" && mv "${old}.tmp" "$old"
-    done
+    # Retire the previous batch records first — one helper, shared with the sweep,
+    # which mints its batches the same way. See retire_batches in pigeonhole.lib.sh.
+    retire_batches
     bid="$(new_uuid)"
     cfiles=()
     for rid in "${clean[@]}"; do cfiles+=("${PROPOSALS_DIR}/${rid}.json"); done
@@ -538,33 +578,6 @@ _${TRUNCATED} more still queued_
     notify "Staged: ${#clean[@]} Document$( (( ${#clean[@]} == 1 )) || printf s )" \
         "" clipboard "$body" "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
     log "  notified batch of ${#clean[@]}"
-fi
-
-# --- paused: one message per topic, whatever the count -----------------------
-# Built from everything currently paused, not just this run — the same rule the batch
-# follows. Twelve documents stuck behind one outage is one fact, and a ping per
-# document would be twelve notifications with identical text and nothing to tap.
-#
-# Retract-then-publish under a stable id so the previous count is replaced rather
-# than stacked. No buttons: no tap is owed, and the next successful retry clears it.
-paused_items=()
-for f in "${PROPOSALS_DIR}"/*.json; do
-    [[ -f "$f" ]] || continue
-    [[ "$(jq -r '.state  // ""' "$f")" == "staged" ]] || continue
-    [[ "$(jq -r '.paused // "null"' "$f")" == "null" ]] && continue
-    paused_items+=("$(basename "$(jq -r '.at // .staged_path // .original_name' "$f")")")
-done
-if (( ${#paused_items[@]} )); then
-    # The reason is whatever the most recent parked document hit. They are almost
-    # always the same outage; if they are not, the retry that clears one clears the
-    # message and the next run republishes with what is actually still true.
-    pz_reason="$(jq -r '.paused // empty' "${PROPOSALS_DIR}"/*.json 2>/dev/null | tail -1)"
-    retract "$PAUSED_NTFY_ID"
-    notify "$(paused_title "${#paused_items[@]}" Document)" "" warning \
-        "$(paused_body "${pz_reason:-The API is unavailable}" \
-                       "moved to bin/ in 7 days, nothing is deleted" "${paused_items[@]}")" \
-        "" "$PAUSED_NTFY_ID"
-    log "  notified ${#paused_items[@]} paused"
 fi
 
 # Individuals, new-this-run only.

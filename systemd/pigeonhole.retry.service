@@ -19,7 +19,7 @@
 # running, the watchdog says so. A retry folded into the sweep would fail silently.
 
 [Unit]
-Description=Documents retry (re-classify documents parked by an API failure)
+Description=Pigeonhole retry (re-classify documents parked by an API failure)
 After=network-online.target
 Wants=network-online.target
 

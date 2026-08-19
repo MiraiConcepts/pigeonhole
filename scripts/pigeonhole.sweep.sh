@@ -64,7 +64,7 @@ exec 9>"${STATE_DIR}/.sweep.lock"
 flock -n 9 || { log "another sweep holds the lock; exiting"; exit 0; }
 
 # shellcheck disable=SC2034  # BASE is consumed by buttons() in pigeonhole.lib.sh
-if ! BASE="$(documents_base_url)"; then
+if ! BASE="$(pigeonhole_base_url)"; then
     # Without a base URL every button would be dead on arrival. Renotifying with
     # dead buttons is worse than staying quiet a day; binning still needs the
     # final note's buttons, so it waits too.
@@ -128,8 +128,7 @@ for f in "${PROPOSALS_DIR}"/*.json; do
 
     # --- a week untouched: move to bin/, with a final note ------------------
     if (( age_h >= BIN_AFTER_DAYS * 24 )); then
-        dest="${BIN_DIR}/$(basename "$cur")"
-        [[ -e "$dest" ]] && dest="${BIN_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$cur")"
+        dest="$(bin_dest "$cur")"
         if (( DRY )); then
             log "would bin ${sp} (${age_h}h staged)"
             continue
@@ -196,22 +195,33 @@ done
 # Clean proposals renotify as ONE batch, the shape the triage first sent them in —
 # with a fresh batch record so its Accept covers exactly these members, and older
 # batch snapshots retired the same way the triage retires them.
+#
+# THE GATE AND THE CONTENT ARE DIFFERENT QUESTIONS. `batch_members` above answers
+# "did anything go overdue", which is what decides whether to nudge at all. What the
+# replacement message must LIST is everything currently staged and clean, because
+# there is only one batch message and this one REPLACES the cumulative one the triage
+# sent: rebuilding it from the overdue members alone dropped every clean proposal
+# younger than 24h off the phone entirely, and their own notification — the one they
+# would have been re-listed in — was the message just retracted. Same predicate the
+# triage partitions with, so the two cannot drift again.
 if (( ${#batch_members[@]} )); then
-    for old in "${PROPOSALS_DIR}"/*.json; do
-        [[ "$(jq -r '.kind // ""' "$old")" == "batch" ]] || continue
-        [[ "$(jq -r '.state // ""' "$old")" == "staged" ]] || continue
-        stamp "$old" '. + {state:"superseded"}'
+    rebatch=()
+    for f in "${PROPOSALS_DIR}"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(staged_class "$f")" == "clean" ]] || continue
+        rebatch+=("$(basename "$f" .json)")
     done
+    retire_batches
     bid="$(new_uuid)"
     bfiles=()
-    for rid in "${batch_members[@]}"; do bfiles+=("${PROPOSALS_DIR}/${rid}.json"); done
+    for rid in "${rebatch[@]}"; do bfiles+=("${PROPOSALS_DIR}/${rid}.json"); done
     jq -nc --arg i "$bid" \
-        --argjson m "$(printf '%s\n' "${batch_members[@]}" | jq -R -s -c 'split("\n")|map(select(length>0))')" \
+        --argjson m "$(printf '%s\n' "${rebatch[@]}" | jq -R -s -c 'split("\n")|map(select(length>0))')" \
         --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{id:$i, kind:"batch", state:"staged", members:$m, staged_at:$t}' \
         > "${PROPOSALS_DIR}/${bid}.json"
     retract "$BATCH_NTFY_ID"
-    notify "Pending Staged: ${#batch_members[@]} Document$( (( ${#batch_members[@]} == 1 )) || printf s )" \
+    notify "Pending Staged: ${#rebatch[@]} Document$( (( ${#rebatch[@]} == 1 )) || printf s )" \
         "" clipboard "$(batch_list "${bfiles[@]}")" \
         "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
 fi
@@ -265,8 +275,7 @@ for f in "${PROPOSALS_DIR}"/*.json; do
     age_d=$(( (now - $(date -d "$ff" +%s 2>/dev/null || echo "$now")) / 86400 ))
     (( age_d >= BIN_AFTER_DAYS )) || continue
 
-    dest="${BIN_DIR}/$(basename "$cur")"
-    [[ -e "$dest" ]] && dest="${BIN_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$cur")"
+    dest="$(bin_dest "$cur")"
     if (( DRY )); then log "would bin ${sp} (${age_d}d paused)"; continue; fi
     if mv -n -- "$cur" "$dest" 2>/dev/null && [[ -f "$dest" && ! -e "$cur" ]]; then
         stamp "$f" --arg at "${dest#"${DOCS}/"}" '. + {state:"binned", at:$at}'
@@ -283,6 +292,14 @@ _The API could not read it in $(( age_d )) days. In bin/ now; nothing is deleted
         log "  !! could not bin ${sp}"
     fi
 done
+
+# The paused summary is reconciled with what is left, and it is reconciled HERE as
+# well as in the triage because of the endgame: the last parked document reaches day
+# 7, this pass bins it, and the triage may never run again — nothing has arrived, so
+# no path unit fires — leaving "Paused: 1 Document" on the phone for a document that
+# is now in bin/ with a note of its own. Unconditional, so it withdraws as readily as
+# it publishes. Skipped under --dry-run, which touches nothing and tells nobody.
+(( DRY )) || sync_paused_summary
 
 # Retrying is NOT done here, and that is a boundary rather than an omission. This
 # sweep holds no ANTHROPIC_API_KEY — its unit has no EnvironmentFile and its header
