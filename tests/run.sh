@@ -104,6 +104,41 @@ for d in 0000 9999 1899 2023-02-29 2021-13 2021-00 abc '' 202 20211 \
     valid_date "$d" && bad "rejects ${d}" reject ok || ok "rejects ${d}"
 done
 
+# ------------------------------------------------------- the Syncthing quiet gate
+# The gate moved to syncthing/syncthing.lib.sh on 2026-08-19, shared with
+# liquidroom, which watches a different directory inside the SAME Syncthing folder.
+# The directory is the argument now, and that is the whole of what has to be pinned:
+# a gate that consulted one fixed root would report liquidroom's mid-transfer as
+# pigeonhole's, or — worse, because it fails silently toward acting — miss its own.
+#
+# SKIP_SYNCTHING_GATE short-circuits the API half; the .tmp half runs for real, so
+# these cases exercise the branch that decides without a network at all.
+echo "syncthing gate"
+fresh
+declare -F syncthing_quiet >/dev/null && ok "syncthing_quiet defined" \
+    || bad "syncthing_quiet defined" "a function" "missing"
+is "a settled directory is quiet" \
+   "$(SKIP_SYNCTHING_GATE=1 syncthing_quiet "$DOCS" && echo quiet)" "quiet"
+: > "${DOCS}/.syncthing.invoice.pdf.tmp"
+is "a scratch file means mid-transfer" \
+   "$(SKIP_SYNCTHING_GATE=1 syncthing_quiet "$DOCS" && echo quiet)" ""
+is "and only for the directory it is in" \
+   "$(SKIP_SYNCTHING_GATE=1 syncthing_quiet "$STAGING_DIR" && echo quiet)" "quiet"
+rm -f "${DOCS}/.syncthing.invoice.pdf.tmp"
+# The failure mode the parameter introduces: no argument would glob the FILESYSTEM
+# ROOT for .syncthing.*.tmp, find none, and report quiet — the gate answering yes to
+# a question nobody asked. It fails closed instead, which costs one .path fire.
+is "no directory fails closed" "$(SKIP_SYNCTHING_GATE=1 syncthing_quiet 2>/dev/null && echo quiet)" ""
+# Without the seam the gate must ASK Syncthing rather than assume — the test seam is
+# the only reason the case above never touches the network, and a gate that defaulted
+# to "quiet" would file truncated documents on every real drop.
+gate="$(sed -n '/^syncthing_quiet() {/,/^}/p' /zpool/catallenya/syncthing/syncthing.lib.sh)"
+has "production still asks the API"  "$gate" "st_folder_idle"
+has "the seam is opt-in"             "$gate" 'SKIP_SYNCTHING_GATE:-'
+# The triage passes its own root, not a default the library could have guessed.
+has "the triage names the directory" "$(cat "${SCRIPT_DIR}/pigeonhole.triage.sh")" \
+    'syncthing_quiet "$DOCS"'
+
 # --------------------------------------------------------------------- triage
 # Driven against the sink: one classify payload per document — the human tap is
 # the verifier, so there is no second call to script.
