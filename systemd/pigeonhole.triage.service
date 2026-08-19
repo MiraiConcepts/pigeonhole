@@ -15,7 +15,7 @@
 # why a narrow window is worse than none, lives in 20-adhoc.conf.
 
 [Unit]
-Description=Documents triage (classify a dropped document, stage a proposal)
+Description=Pigeonhole triage (classify a dropped document, stage a proposal)
 After=network-online.target docker.service
 Wants=network-online.target
 # Also set by the base policy, but stated here because this job is .path-triggered

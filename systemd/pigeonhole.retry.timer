@@ -2,7 +2,7 @@
 # there and must NOT be repeated here; the gate refuses a unit that re-declares them,
 # because a line that is silently discarded reads as configuration and is a lie.
 [Unit]
-Description=Daily retry for documents parked by an API failure
+Description=Daily pigeonhole retry for documents parked by an API failure
 
 [Timer]
 # 07:50 SGT: five minutes after pigeonhole.sweep, so anything that reached day 7 has

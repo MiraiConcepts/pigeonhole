@@ -1,7 +1,7 @@
 # Timer policy: Persistent=true and [Install] WantedBy=timers.target are
 # inherited from systemd/policy/10-base-timer.conf. `systemctl cat` shows them.
 [Unit]
-Description=Nightly documents sweep (07:45 SGT)
+Description=Nightly pigeonhole sweep (07:45 SGT)
 
 [Timer]
 # Morning-side, deliberately: everything the sweep does ends in a phone

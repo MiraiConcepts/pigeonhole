@@ -14,7 +14,7 @@
 # restarting forever is still a unit whose logs nobody can read.
 
 [Unit]
-Description=Documents apply (perform the move a button tap asked for)
+Description=Pigeonhole apply (perform the move a button tap asked for)
 Requires=zfs-mount.service
 After=zfs-mount.service
 

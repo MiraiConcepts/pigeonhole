@@ -1,7 +1,7 @@
 # Timer policy: Persistent=true and [Install] WantedBy=timers.target are
 # inherited from systemd/policy/10-base-timer.conf. `systemctl cat` shows them.
 [Unit]
-Description=Daily sweep for documents the path unit could not see
+Description=Daily pigeonhole backstop for documents the path unit could not see
 
 [Timer]
 # Triggers pigeonhole.triage.service directly — the SAME unit the path unit fires,
