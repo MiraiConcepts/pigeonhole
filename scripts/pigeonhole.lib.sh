@@ -17,6 +17,12 @@ set -uo pipefail
 source "/zpool/catallenya/ai/scripts/ai.lib.sh"
 # shellcheck source=/zpool/catallenya/ntfy/ntfy.lib.sh
 source "/zpool/catallenya/ntfy/ntfy.lib.sh"
+# The Syncthing quiet gate, shared with liquidroom — st_apikey / st_api_base /
+# st_folder_idle / syncthing_quiet, the folder id and the SKIP_SYNCTHING_GATE test
+# seam. It was two byte-identical copies differing only in which directory the .tmp
+# glob watched; that directory is now syncthing_quiet's argument.
+# shellcheck source=/zpool/catallenya/syncthing/syncthing.lib.sh
+source "/zpool/catallenya/syncthing/syncthing.lib.sh"
 
 # Overridable ONLY so the pipeline can be exercised against a scratch tree without
 # touching the real corpus — same seam as API_URL in ai.lib.sh. Never set in
@@ -133,43 +139,12 @@ valid_date() { # $1 = YYYY | YYYY-MM | YYYY-MM-DD
     esac
 }
 
-# A dropped file is only touched once Syncthing has finished with it. Two signals,
-# both cheap: no scratch files alongside (Syncthing writes .syncthing.*.tmp then
-# renames, so their presence means the folder is mid-work), and the API's own idle
-# state. This replaced an hour-long MIN_AGE_SECONDS proxy for "probably finished";
-# asking Syncthing directly is both faster and an actual answer.
-docs_quiet() {
-    compgen -G "${DOCS}/.syncthing.*.tmp" >/dev/null 2>&1 && return 1
-    # Test seam, same rationale as DOCS above: a scratch tree has no Syncthing to
-    # ask. Never set in production — without the real idle check, a mid-transfer
-    # file gets classified truncated.
-    [[ "${SKIP_SYNCTHING_GATE:-}" == "1" ]] && return 0
-    st_folder_idle
-}
-
-SYNCTHING_CONFIG="/zpool/catallenya/syncthing/data/config/config.xml"
-SYNCTHING_FOLDER_ID="3j1oy-9cefl"   # label "master"
-
-# Reaching the Syncthing API from the host is fiddlier than it looks:
-#   - :8384 is EXPOSED but NOT PUBLISHED (docker ps shows a bare "8384/tcp"), so
-#     127.0.0.1:8384 reaches nothing. Consistent with commit 8051401's tailnet-only posture.
-#   - The container IP (172.18.x) works but is dynamic — it moves on `compose up -d`.
-#     Resolving it at runtime needs `docker inspect`, i.e. the docker socket, i.e.
-#     root-equivalent access for this unit. Not worth it for a health check.
-#   - So: go through Caddy on loopback with the correct SNI. Stable, cert validates,
-#     no hardcoded IP, no docker socket. Port comes from .env like everything else.
-# Sets ST_HOST / ST_PORT / ST_BASE as globals. Must NOT be called via $(...) — a
-# subshell would set them and throw them away.
-ST_HOST=""; ST_PORT=""; ST_BASE=""
-st_api_base() {
-    local root_env="/zpool/catallenya/.env"
-    [[ -f "$root_env" ]] || { log "no .env"; return 1; }
-    # shellcheck source=/dev/null  # runtime-only file, not in the repo
-    source "$root_env"
-    ST_HOST="${TAILNET_DOMAIN}.${TAILNET_DNS_NAME}"
-    ST_PORT="${SYNCTHING_REVERSE_PROXY_PORT}"
-    ST_BASE="https://${ST_HOST}:${ST_PORT}"
-}
+# The Syncthing quiet gate lives in syncthing/syncthing.lib.sh (sourced at the top),
+# shared with liquidroom. The triage calls syncthing_quiet "$DOCS" — a dropped file
+# is only touched once Syncthing has finished with it, because acting mid-transfer
+# files a truncated document and a move inside a synced folder propagates to every
+# peer. docs_quiet() was the local name for it; the only thing it added over the
+# shared function was the directory, which is now the argument.
 
 MAX_PER_RUN="${MAX_PER_RUN:-20}"   # cap; truncation is logged explicitly, never silent
 # Pages rasterised and sent per document. NOT 1: page 1 is often a cover sheet, and
@@ -180,29 +155,6 @@ NTFY_TOPIC="pigeonhole"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
-
-# --- Syncthing -------------------------------------------------------------
-
-# The config dir is carrein:carrein 0700 — readable as ourselves, no elevation.
-st_apikey() {
-    [[ -r "$SYNCTHING_CONFIG" ]] || die "cannot read $SYNCTHING_CONFIG"
-    grep -oPm1 '(?<=<apikey>)[^<]+' "$SYNCTHING_CONFIG"
-}
-
-# Refuse to touch anything unless Syncthing says the folder is settled. Acting
-# mid-transfer files a truncated document, and a move inside a synced folder
-# propagates to every peer — a bad move is not local.
-st_folder_idle() {
-    local key json state need
-    key="$(st_apikey)" || return 1
-    st_api_base || return 1   # sets globals; NOT $(...) — see st_api_base
-    json="$(curl -sS --max-time 15 --resolve "${ST_HOST}:${ST_PORT}:127.0.0.1" \
-            -H "X-API-Key: ${key}" \
-            "${ST_BASE}/rest/db/status?folder=${SYNCTHING_FOLDER_ID}" 2>/dev/null)" || return 1
-    state="$(jq -r '.state // "unknown"' <<<"$json" 2>/dev/null)"
-    need="$(jq -r '.needFiles // 1' <<<"$json" 2>/dev/null)"
-    [[ "$state" == "idle" && "$need" == "0" ]]
-}
 
 # --- Candidates ------------------------------------------------------------
 
@@ -320,17 +272,15 @@ is_lookalike() { # $1=doc_type $2=folder
 # roughly forty values, to use four — and it is arbitrary code execution if that
 # file ever grows a $(...), which a data file should never be able to do. capture
 # fixed this first; the copy here lagged behind.
+#
+# The EXTRACTION is _ntfy_env's, in ntfy/ntfy.lib.sh; the KEY LIST stays here. That
+# split is the point rather than an accident of refactoring: three pipelines needed
+# the same loop over a different set of names, and a shared function that guessed
+# which set to read — or read the union of all of them — would be a bug waiting for
+# the next pipeline. The one key below is this pipeline's own.
 # (Deliberately not naming the variables in prose: gitleaks 8.24.3, which CI pins,
 # reads a secret-shaped name beside the word "password" as a finding.)
-_load_env() {
-    local root_env="/zpool/catallenya/.env" k v line
-    [[ -f "$root_env" ]] || { log "no .env"; return 1; }
-    for k in TAILNET_DOMAIN TAILNET_DNS_NAME NTFY_REVERSE_PROXY_PORT PIGEONHOLE_REVERSE_PROXY_PORT; do
-        line="$(grep -m1 "^${k}=" "$root_env" 2>/dev/null)" || continue
-        v="${line#*=}"; v="${v%\"}"; v="${v#\"}"
-        printf -v "$k" '%s' "$v"
-    done
-}
+_load_env() { _ntfy_env PIGEONHOLE_REVERSE_PROXY_PORT; }
 
 # Where an ntfy button POSTs. Caddy serves the approval container on the tailnet;
 # every component is asserted because an unset var yields a syntactically valid but

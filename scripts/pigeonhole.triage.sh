@@ -29,13 +29,9 @@ source "${SELF_DIR}/pigeonhole.lib.sh"
 # capture pipeline — one edit there moves both.
 MAX_TOKENS=4096
 
-# How long to wait for Syncthing to go quiet before giving up. The .path unit will
-# re-fire while the file remains, so giving up is a retry rather than a loss — but
-# waiting in-process turns what would be a spin into one sleeping run, and flock
-# keeps the spins from overlapping. The service also carries a start limit as a
+# QUIET_WAIT_S / QUIET_POLL_S come from syncthing/syncthing.lib.sh with liquidroom,
+# which waits on the same folder. The service also carries a start limit as a
 # backstop against a Syncthing that never settles.
-QUIET_WAIT_S="${QUIET_WAIT_S:-180}"
-QUIET_POLL_S=15
 
 for _bin in jq curl base64 od sha256sum pdfinfo pdftoppm identify; do
     command -v "$_bin" >/dev/null || die "missing required command: ${_bin}"
@@ -241,7 +237,7 @@ record() { printf '%s\n' "$2" > "${PROPOSALS_DIR}/${1}.json"; NEW_IDS+=("$1"); }
 # --- drain the root --------------------------------------------------------
 
 waited=0
-until docs_quiet; do
+until syncthing_quiet "$DOCS"; do
     (( waited >= QUIET_WAIT_S )) && { log "syncthing still busy after ${waited}s; leaving root for the next fire"; exit 0; }
     sleep "$QUIET_POLL_S"; waited=$((waited + QUIET_POLL_S))
 done
