@@ -261,8 +261,7 @@ ${pad}${line#* — }
     # refusal is a thing you tapped and can tap again, not an emergency, and
     # everything-shouts is how a topic gets muted — after which the loud messages are
     # the first thing lost. Urgency belongs in what the message says.
-    notify "$(title_count Refused "$REFUSED" Document)" \
-        "" warning "$body"
+    notify_fault "$(title_count Refused "$REFUSED" Document)" "$body"
 fi
 
 left="$(find "$APPROVALS_DIR" -maxdepth 1 -name '*.json' | wc -l)"
