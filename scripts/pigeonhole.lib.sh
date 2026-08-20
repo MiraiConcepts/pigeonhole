@@ -17,6 +17,24 @@ set -uo pipefail
 source "/zpool/catallenya/ai/scripts/ai.lib.sh"
 # shellcheck source=/zpool/catallenya/ntfy/ntfy.lib.sh
 source "/zpool/catallenya/ntfy/ntfy.lib.sh"
+
+# --- notification vocabulary -------------------------------------------------
+# Declared here rather than in a central table — the same shape as a unit's
+# [X-Catallenya] Class= sticker: the thing declares, and nothing repeats it in a map
+# somebody has to remember to extend. systemd/contract.sh reads these; every entry
+# must be a past participle. See ntfy/MESSAGES.md.
+#
+# `Stuck` and `Flagged` are shared with afterimage because the SITUATIONS match, not
+# because a rule forces it — a file that cannot leave its drop zone, and a document
+# the model answered on that still wants a human. `Abandoned` is shared for a
+# different reason: both pipelines implement the same 7-day give-up policy.
+#
+# ONE NOUN. pigeonhole has filenames and deliberately keeps them in the BODY: a batch
+# of three wants three names listed, not one promoted into the title.
+# shellcheck disable=SC2034  # consumed by systemd/contract.sh
+NTFY_VERBS=(Staged Blocked Flagged Refused Binned Stuck Abandoned)
+# shellcheck disable=SC2034  # consumed by systemd/contract.sh
+NTFY_NOUNS=(Document)
 # The Syncthing quiet gate, shared with liquidroom — st_apikey / st_api_base /
 # st_folder_idle / syncthing_quiet, the folder id and the SKIP_SYNCTHING_GATE test
 # seam. It was two byte-identical copies differing only in which directory the .tmp
@@ -432,6 +450,13 @@ BATCH_NTFY_ID="documents-batch"
 # one fact, and it should read as one.
 PAUSED_NTFY_ID="pigeonhole-paused"
 
+# Same argument, different failure: a document that could not be MOVED out of the
+# Syncthing root. The cause is almost always one thing — a full disk, a permission
+# change — so however many are stuck it is one message, replaced rather than stacked.
+# Mirrors afterimage's STUCK_NTFY_ID, which exists because twelve identical alarms
+# from one full pool is how a topic gets muted.
+STUCK_NTFY_ID="pigeonhole-stuck"
+
 # sync_paused_summary — the one "Paused: N Documents" message for this topic, rebuilt
 # from the records and reconciled with what is on the phone.
 #
@@ -449,15 +474,21 @@ PAUSED_NTFY_ID="pigeonhole-paused"
 # that was over while a different one was running.
 sync_paused_summary() {
     # LC_ALL=C so the timestamp comparison below is byte order, not collation order.
-    local f ff reason="" newest="" LC_ALL=C
-    local -a items=()
+    local f ff r reason="" newest="" LC_ALL=C
+    local -a items=() reasons=()
     for f in "${PROPOSALS_DIR}"/*.json; do
         [[ -f "$f" ]] || continue
         [[ "$(staged_class "$f")" == "paused" ]] || continue
         items+=("$(basename "$(jq -r '.at // .staged_path // .original_name' "$f")")")
+        r="$(jq -r '.paused' "$f")"
+        # EVERY parked reason, not just the newest: the triage rewrites a record's
+        # reason on each park, so an outage that began unreachable and became an
+        # empty balance leaves both kinds sitting in staging at once. The sentence
+        # below still names the most recent; the bracket names all of them.
+        reasons+=("$r")
         ff="$(jq -r '.first_failed_at // ""' "$f")"
         if [[ -z "$reason" || "$ff" > "$newest" ]]; then
-            newest="$ff"; reason="$(jq -r '.paused' "$f")"
+            newest="$ff"; reason="$r"
         fi
     done
     # Five fixed slots, then the items; with none it is a bare retract. The outcome
@@ -465,6 +496,7 @@ sync_paused_summary() {
     # true of afterimage's screenshots, and flattening that would make the message
     # consistent by hiding the part you most need to know.
     paused_sync "$PAUSED_NTFY_ID" Document "${reason:-The API is unavailable}" \
+        "$(paused_cause "${reasons[@]:-}")" \
         "moved to bin/ in 7 days, nothing is deleted" "${items[@]}"
 }
 

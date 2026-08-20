@@ -86,6 +86,10 @@ fi
 
 now=$(date +%s)
 renotified=0; binned=0; batch_members=()
+# The age the re-batched message reports. Tracked as the OLDEST of the overdue
+# members, not the newest: the batch is one message about several documents, and the
+# number on it should say how long the worst-served one has been waiting.
+batch_oldest_h=0
 
 # stamp <record-file> [jq args...] <filter> — rewrite the record in place.
 # Values go in via --arg, NEVER interpolated into the filter: staged_path can be an
@@ -158,7 +162,7 @@ for f in "${PROPOSALS_DIR}"/*.json; do
             # it offers the two terminal choices and no Skip. It is also the ONE
             # notification that is meant to outlive your attention — everything else
             # here is withdrawn the moment it stops being actionable.
-            notify "Binned: 1 Document" "" wastebasket "$binbody" "$(bin_buttons "$id" "$offer_accept")" "$id"
+            notify "$(title_count Binned 1 Document)" "" wastebasket "$binbody" "$(bin_buttons "$id" "$offer_accept")" "$id"
         else
             log "  !! could not bin ${sp}"
         fi
@@ -173,18 +177,19 @@ for f in "${PROPOSALS_DIR}"/*.json; do
         fi
         if [[ "$bl" != "null" ]]; then
             retract "$id"
-            notify "Pending Blocked: 1 Document" "" warning \
+            notify "$(title_count "Still Blocked" 1 Document "" "$(title_age "$age_h")")" "" warning \
                 "1\. $(md_escape "$(basename "$sp")")
 
 $(reason_text "$bl")" "$(buttons "$id" 0)" "$id"
         elif [[ -n "$fl" ]]; then
             retract "$id"
-            notify "Pending Review: 1 Document" "" question \
+            notify "$(title_count "Still Flagged" 1 Document "" "$(title_age "$age_h")")" "" question \
                 "$(batch_list "$f")
 
 ${fl}" "$(buttons "$id" 1)" "$id"
         else
             batch_members+=("$id")      # clean ones re-batch below, as one message
+            (( age_h > batch_oldest_h )) && batch_oldest_h=$age_h
         fi
         stamp "$f" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {renotified_at:$t}'
         renotified=$((renotified + 1))
@@ -221,7 +226,7 @@ if (( ${#batch_members[@]} )); then
         '{id:$i, kind:"batch", state:"staged", members:$m, staged_at:$t}' \
         > "${PROPOSALS_DIR}/${bid}.json"
     retract "$BATCH_NTFY_ID"
-    notify "Pending Staged: ${#rebatch[@]} Document$( (( ${#rebatch[@]} == 1 )) || printf s )" \
+    notify "$(title_count "Still Staged" "${#rebatch[@]}" Document "" "$(title_age "$batch_oldest_h")")" \
         "" clipboard "$(batch_list "${bfiles[@]}")" \
         "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
 fi
@@ -283,7 +288,7 @@ for f in "${PROPOSALS_DIR}"/*.json; do
         # No Accept: there is no proposal to accept, because the model never answered.
         # Delete is the only arm, and the document itself stays in bin/ until you tap it.
         retract "$id"
-        notify "Binned: 1 Document" "" wastebasket \
+        notify "$(title_count Abandoned 1 Document)" "" wastebasket \
             "1\. $(md_escape "$(basename "$sp")")
 
 _The API could not read it in $(( age_d )) days. In bin/ now; nothing is deleted without a tap._" \
