@@ -296,6 +296,12 @@ declare -A CORPUS_BY_HASH=()
 while IFS= read -r f; do CORPUS_BY_HASH["$(sha256_of "$f")"]="$f"; done < <(list_corpus)
 
 STAGED=0; BINNED=0; BLOCKED=0; PAUSED=0
+# A document that could not even be MOVED out of the Syncthing root. Counted, not just
+# logged, because this is the one failure the run cannot otherwise record: no record is
+# written, so the notify loop below — which walks records — is structurally blind to it,
+# and the .path unit re-fires on the file at an API call per spin. afterimage learned
+# this the hard way and grew `Stuck`; pigeonhole had the identical bug and exited 0.
+STUCK=0
 
 for name in "${CANDS[@]}"; do
     src="${DOCS}/${name}"
@@ -342,7 +348,7 @@ for name in "${CANDS[@]}"; do
             record "$id" "$(jq -c --argjson b "$base" --arg r "$reason" --arg p "${staged#"${DOCS}/"}" \
                 '$b + {state:"staged", blocked:$r, staged_path:$p}' <<<'{}')"
         else
-            log "  !! could not stage ${name}"
+            STUCK=$((STUCK+1)); log "  !! could not stage ${name}"
         fi
         continue
     fi
@@ -380,6 +386,7 @@ for name in "${CANDS[@]}"; do
                 '$b + {state:"staged", paused:$r, staged_path:$p,
                        first_failed_at: ($b.first_failed_at // $t)}' <<<'{}')"
         else
+            STUCK=$((STUCK+1))
             log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
         fi
         continue
@@ -445,6 +452,7 @@ for name in "${CANDS[@]}"; do
         # outcome for a proposal that could not even be written down.
         blocked="BAD_SEGMENT"
         if ! staged="$(stage_file "$src" "$bname")"; then
+            STUCK=$((STUCK+1))
             log "  !! could not stage ${name} — LEFT AT ROOT, next fire will retry"
             continue
         fi
@@ -571,7 +579,7 @@ _${TRUNCATED} more still queued_
     # Retract-then-publish rather than an in-place update: an update may be applied
     # silently, and a batch that grew a document has to alert.
     retract "$BATCH_NTFY_ID"
-    notify "Staged: ${#clean[@]} Document$( (( ${#clean[@]} == 1 )) || printf s )" \
+    notify "$(title_count Staged "${#clean[@]}" Document)" \
         "" clipboard "$body" "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
     log "  notified batch of ${#clean[@]}"
 fi
@@ -587,16 +595,47 @@ for rid in "${NEW_IDS[@]:-}"; do
     # Tagged with the record id: the sweep's nudge and its binned note both replace
     # this message rather than stacking beside it.
     if [[ "$bl" != "null" ]]; then
-        notify "Blocked: 1 Document" "" warning \
+        # CLASSIFY_FAILED leaves the Blocked family. It is the one code here that is
+        # not about the document at all — it is rc 1 out of ai.lib.sh, the same fact
+        # afterimage reports, and the model class must read identically on both
+        # topics. What stays under `Blocked` is the eleven codes that genuinely
+        # describe the file: an unreadable PDF, an encrypted archive, a path that
+        # escapes the corpus, an impossible date.
+        if [[ "$bl" == CLASSIFY_FAILED ]]; then
+            btitle="$(title_count "Model Failed" 1 Document)"
+        else
+            btitle="$(title_count Blocked 1 Document)"
+        fi
+        notify "$btitle" "" warning \
             "1\. $(md_escape "$(basename "$(jq -r .staged_path "$f")")")
 
 $(reason_text "$bl")" "$(buttons "$rid" 0)" "$rid"
     elif [[ -n "$fl" ]]; then
-        notify "Review: 1 Document" "" question \
+        # `Flagged`, not `Review`: the title reports what happened to the document,
+        # and the two buttons underneath already say what to do about it. This was
+        # the only title in the repo giving an instruction.
+        notify "$(title_count Flagged 1 Document)" "" question \
             "$(batch_list "$f")
 
 ${fl}" "$(buttons "$rid" 1)" "$rid"
     fi
 done
+
+# --- files that never made it out of the root --------------------------------
+# LAST, and non-zero. Everything above is about documents that reached staging/; this
+# is about ones that did not, and it is the branch that used to be silent. A run where
+# every file failed to stage exited 0: no OnFailure=, no notification, ExecStartPost=
+# stamping the watchdog fresh, and the .path unit re-firing forever.
+#
+# One message however many are stuck, on a stable id, because the cause is almost
+# always one thing — a full disk or a permission change — and twelve identical alarms
+# is how a topic gets muted.
+if (( STUCK > 0 )); then
+    notify "$(title_count Stuck "$STUCK" Document)" "" warning \
+        "Could not move $( (( STUCK == 1 )) && printf 'a document' || printf '%s documents' "$STUCK" ) out of the documents root. Disk full, or permissions changed? The trigger will keep retrying until this is cleared." \
+        "" "$STUCK_NTFY_ID"
+    log "  !! ${STUCK} document(s) STUCK at root"
+    exit 1
+fi
 
 exit 0

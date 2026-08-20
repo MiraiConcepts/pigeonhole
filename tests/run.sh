@@ -521,7 +521,14 @@ mkpaused 22222222-0000-4000-8000-000000000000 b.pdf staged 2026-08-02T00:00:00Z 
 mkpaused 33333333-0000-4000-8000-000000000000 c.pdf binned 2026-08-03T00:00:00Z "Something else entirely"
 t="$(psync)"
 is    "retract fires first"                "$(head -n1 <<<"$t")" "RETRACT pigeonhole-paused"
-has   "only STAGED records are counted"    "$t" "title=[Paused: 2 Documents]"
+has   "only STAGED records are counted"    "$t" "Model Paused: 2 Documents"
+# The two staged records failed for DIFFERENT reasons — one unreachable, one out of
+# credits — which is the case the bracket exists for. The triage rewrites a record's
+# reason on every park, so a long outage really does leave both kinds in staging at
+# once, and naming only the newest would hide the other. The binned record's reason
+# must not reach it: `Something else entirely` matches neither pattern, so a leak
+# would read as an empty bracket rather than as Mixed.
+has   "and a mixed outage names both"      "$t" "Model Paused: 2 Documents [Mixed]"
 has   "and they are listed"                "$t" '1\. a.pdf'
 has   "the reason is the newest staged failure" "$t" "_Out of credits."
 hasnt "never a binned record's"            "$t" "Something else entirely"

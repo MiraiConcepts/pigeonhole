@@ -261,7 +261,7 @@ ${pad}${line#* — }
     # refusal is a thing you tapped and can tap again, not an emergency, and
     # everything-shouts is how a topic gets muted — after which the loud messages are
     # the first thing lost. Urgency belongs in what the message says.
-    notify "Refused: ${REFUSED} Document$( (( REFUSED == 1 )) || printf s )" \
+    notify "$(title_count Refused "$REFUSED" Document)" \
         "" warning "$body"
 fi
 
