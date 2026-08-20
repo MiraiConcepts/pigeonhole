@@ -102,6 +102,31 @@ that is event-driven. It exists for what the path-unit globs cannot see, such as
 file whose extension matches nothing. It fires the same triage, which exits in
 milliseconds having found nothing.
 
+## When the model cannot answer
+
+A document is only ever *blocked* when a human has to look at it. If the API is
+unreachable, or the account is out of credits, nothing about the document is wrong
+and nobody needs to do anything except wait — so it is **parked** instead.
+
+A parked document keeps its original filename, sits in `staging/` with no proposal
+and no buttons, and is re-classified once a day until it goes through. The retry
+happens **where the file already is**: it is never moved back to the Syncthing root
+to be picked up the usual way, because that root replicates, and a move out and back
+would land on every device twice a day for as long as the outage lasted.
+
+| When | What |
+|---|---|
+| on failure | parked in `staging/`, one message per topic naming how many are waiting |
+| every morning | re-classified in place; the message is replaced, never stacked |
+| 7d **from the first failure** | moved to `bin/`, intact |
+
+That clock runs from the *first* failure and no retry resets it — the same reason
+`skip` was removed. Anything that can push a deadline back can push it back forever.
+
+Retrying is a separate job from the sweep, and deliberately so: the sweep holds no
+API key, because moving files and posting notifications should not be able to spend
+money.
+
 ## The container holds nothing — do not "clean this up"
 
 This pipeline's sibling, [afterimage](https://github.com/MiraiConcepts/afterimage),
