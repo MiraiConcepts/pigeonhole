@@ -157,12 +157,13 @@ for f in "${PROPOSALS_DIR}"/*.json; do
             # Safe to do unconditionally: the note below carries the SAME buttons,
             # so the undo handle survives — and a clean document never had a solo
             # message at all, which makes this a free no-op for it.
-            retract "$id"
             # bin_buttons, not buttons: this note is the document's last handle, so
             # it offers the two terminal choices and no Skip. It is also the ONE
             # notification that is meant to outlive your attention — everything else
             # here is withdrawn the moment it stops being actionable.
-            notify "$(title_count Binned 1 Document)" "" wastebasket "$binbody" "$(bin_buttons "$id" "$offer_accept")" "$id"
+            #
+            # notify_resolved does the retract itself, under the same id.
+            notify_resolved "$(title_count Binned 1 Document)" "$binbody" "$id" "$(bin_buttons "$id" "$offer_accept")"
         else
             log "  !! could not bin ${sp}"
         fi
@@ -176,17 +177,15 @@ for f in "${PROPOSALS_DIR}"/*.json; do
             continue
         fi
         if [[ "$bl" != "null" ]]; then
-            retract "$id"
-            notify "$(title_count "Still Blocked" 1 Document "" "$(title_age "$age_h")")" "" warning \
+            notify_nudge "$(title_count "Still Blocked" 1 Document "" "$(title_age "$age_h")")" \
                 "1\. $(md_escape "$(basename "$sp")")
 
-$(reason_text "$bl")" "$(buttons "$id" 0)" "$id"
+$(reason_text "$bl")" "$id" "$(buttons "$id" 0)"
         elif [[ -n "$fl" ]]; then
-            retract "$id"
-            notify "$(title_count "Still Flagged" 1 Document "" "$(title_age "$age_h")")" "" question \
+            notify_nudge "$(title_count "Still Flagged" 1 Document "" "$(title_age "$age_h")")" \
                 "$(batch_list "$f")
 
-${fl}" "$(buttons "$id" 1)" "$id"
+${fl}" "$id" "$(buttons "$id" 1)"
         else
             batch_members+=("$id")      # clean ones re-batch below, as one message
             (( age_h > batch_oldest_h )) && batch_oldest_h=$age_h
@@ -225,10 +224,9 @@ if (( ${#batch_members[@]} )); then
         --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{id:$i, kind:"batch", state:"staged", members:$m, staged_at:$t}' \
         > "${PROPOSALS_DIR}/${bid}.json"
-    retract "$BATCH_NTFY_ID"
-    notify "$(title_count "Still Staged" "${#rebatch[@]}" Document "" "$(title_age "$batch_oldest_h")")" \
-        "" clipboard "$(batch_list "${bfiles[@]}")" \
-        "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
+    notify_nudge "$(title_count "Still Staged" "${#rebatch[@]}" Document "" "$(title_age "$batch_oldest_h")")" \
+        "$(batch_list "${bfiles[@]}")" \
+        "$BATCH_NTFY_ID" "$(buttons "$bid" 1)"
 fi
 
 # --- withdraw a binned note that has had its week ---------------------------
@@ -287,12 +285,11 @@ for f in "${PROPOSALS_DIR}"/*.json; do
         paused_binned=$((paused_binned + 1)); log "binned ${sp} (${age_d}d paused)"
         # No Accept: there is no proposal to accept, because the model never answered.
         # Delete is the only arm, and the document itself stays in bin/ until you tap it.
-        retract "$id"
-        notify "$(title_count Abandoned 1 Document)" "" wastebasket \
+        notify_resolved "$(title_count Abandoned 1 Document)" \
             "1\. $(md_escape "$(basename "$sp")")
 
 _The API could not read it in $(( age_d )) days. In bin/ now; nothing is deleted without a tap._" \
-            "$(bin_buttons "$id" 0)" "$id"
+            "$id" "$(bin_buttons "$id" 0)"
     else
         log "  !! could not bin ${sp}"
     fi

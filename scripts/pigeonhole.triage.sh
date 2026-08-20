@@ -578,9 +578,12 @@ _${TRUNCATED} more still queued_
     # just marked `superseded` above, and this is the same step on the phone.
     # Retract-then-publish rather than an in-place update: an update may be applied
     # silently, and a batch that grew a document has to alert.
+    # A batch that GREW has to alert, so this is a fresh proposal under the stable
+    # batch id rather than a nudge: notify_nudge would retract-and-republish, which is
+    # the same wire traffic, but the call site should say which of the two it means.
     retract "$BATCH_NTFY_ID"
-    notify "$(title_count Staged "${#clean[@]}" Document)" \
-        "" clipboard "$body" "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
+    notify_proposal "$(title_count Staged "${#clean[@]}" Document)" \
+        "$body" "$(buttons "$bid" 1)" "$BATCH_NTFY_ID"
     log "  notified batch of ${#clean[@]}"
 fi
 
@@ -606,7 +609,7 @@ for rid in "${NEW_IDS[@]:-}"; do
         else
             btitle="$(title_count Blocked 1 Document)"
         fi
-        notify "$btitle" "" warning \
+        notify_proposal "$btitle" \
             "1\. $(md_escape "$(basename "$(jq -r .staged_path "$f")")")
 
 $(reason_text "$bl")" "$(buttons "$rid" 0)" "$rid"
@@ -614,7 +617,7 @@ $(reason_text "$bl")" "$(buttons "$rid" 0)" "$rid"
         # `Flagged`, not `Review`: the title reports what happened to the document,
         # and the two buttons underneath already say what to do about it. This was
         # the only title in the repo giving an instruction.
-        notify "$(title_count Flagged 1 Document)" "" question \
+        notify_proposal "$(title_count Flagged 1 Document)" \
             "$(batch_list "$f")
 
 ${fl}" "$(buttons "$rid" 1)" "$rid"
@@ -631,9 +634,9 @@ done
 # always one thing — a full disk or a permission change — and twelve identical alarms
 # is how a topic gets muted.
 if (( STUCK > 0 )); then
-    notify "$(title_count Stuck "$STUCK" Document)" "" warning \
+    notify_fault "$(title_count Stuck "$STUCK" Document)" \
         "Could not move $( (( STUCK == 1 )) && printf 'a document' || printf '%s documents' "$STUCK" ) out of the documents root. Disk full, or permissions changed? The trigger will keep retrying until this is cleared." \
-        "" "$STUCK_NTFY_ID"
+        "$STUCK_NTFY_ID"
     log "  !! ${STUCK} document(s) STUCK at root"
     exit 1
 fi

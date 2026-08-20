@@ -503,7 +503,9 @@ echo "the paused summary"
 psync() {
     (
         retract() { printf 'RETRACT %s\n' "${1:-}"; }
-        notify()  { printf 'NOTIFY title=[%s] id=[%s]\n%s\n' "${1:-}" "${6:-}" "${4:-}"; }
+        # notify <title> <body> [actions] [seq-id] — priority and tags left the
+        # signature on 2026-08-20.
+        notify()  { printf 'NOTIFY title=[%s] id=[%s]\n%s\n' "${1:-}" "${4:-}" "${2:-}"; }
         sync_paused_summary
     )
 }
@@ -537,8 +539,12 @@ has   "the summary rides its stable id"    "$t" "id=[pigeonhole-paused]"
 # THE FIX: the run that finds nothing paused still retracts, and publishes nothing.
 fresh
 t0="$(psync)"
-is    "a resolved outage still retracts" "$t0" "RETRACT pigeonhole-paused"
-hasnt "and republishes nothing"          "$t0" "NOTIFY"
+# THE RUN THAT ENDS AN OUTAGE DOES NOTHING — a deliberate reversal of the 2026-08-19
+# behaviour, not a regression. The withdrawal rule (2026-08-20) says a notification
+# WITHOUT BUTTONS is never withdrawn by the system: an absent one is ambiguous — fixed,
+# mis-swiped, or never sent — while a stale one is not. The summary still replaces
+# itself WHILE an outage runs, which the retract above proves.
+is "a resolved outage retracts nothing"  "$t0" ""
 
 # --------------------------------------------------------------------- sweep
 # Nightly lifecycle: one nudge at 24h, bin at 7d, bin never emptied. Ages come
@@ -714,14 +720,13 @@ hasnt "nor a skip arm in apply"      "$ap"  "      skip)"
 # ...and it withdraws the message the tap actually CAME FROM, resolved before the
 # move rewrites the record: a batch's message rides BATCH_NTFY_ID, never the batch
 # record's uuid.
-has "apply withdraws, and only when nothing refused" "$ap" '(( REFUSED == before )) && retract "$nid"'
 has "and it withdraws what the tap rode"             "$ap" 'nid="$(notif_id '
 # Nothing in this repo shouts. The refusal notification was the last `high` left
 # anywhere in it — and a refusal is something you tapped and can tap again, not an
 # emergency. Everything-loud is how a topic gets muted, and a muted topic loses the
 # loud messages first.
 hasnt "no notification is sent at high priority" "$ap" 'high warning'
-has   "the refusal goes out at default priority" "$ap" '"" warning "$body"'
+has   "the refusal is a fault, not a proposal"    "$ap" 'notify_fault "$(title_count Refused'
 
 # The binned note is the one notification meant to outlive your attention, so it
 # gets the two terminal choices and no Skip — sending it back to staging would
@@ -754,7 +759,7 @@ has "notify can carry an id"  "$nt" 'X-Sequence-ID:'
 # X-ID is accepted with a 200 and silently ignored — the message stores no
 # sequence_id and every retract then addresses nothing. Verified against 2.27.0.
 hasnt "and not the header that looks right" "$nt" 'X-ID:'
-has "and sanitises it"        "$nt" 'ntfy_id_safe "$6"'
+has "and sanitises it"        "$nt" 'ntfy_id_safe "$4"'
 
 # One live batch message, addressed by a stable literal rather than by whichever
 # record id happened to carry it — the sweep has to withdraw the previous batch
@@ -762,8 +767,8 @@ has "and sanitises it"        "$nt" 'ntfy_id_safe "$6"'
 tri="$(cat "${SCRIPT_DIR}/pigeonhole.triage.sh")"
 swp="$(cat "${SCRIPT_DIR}/pigeonhole.sweep.sh")"
 has "triage tags the batch"   "$tri" 'buttons "$bid" 1)" "$BATCH_NTFY_ID"'
-has "sweep tags the batch"    "$swp" 'buttons "$bid" 1)" "$BATCH_NTFY_ID"'
-has "the binned note is tagged" "$swp" '"$(bin_buttons "$id" "$offer_accept")" "$id"'
+has "the batch nudge rides its stable id" "$swp" '"$BATCH_NTFY_ID" "$(buttons "$bid" 1)"'
+has "the binned note keeps its handle" "$swp" '"$id" "$(bin_buttons "$id" "$offer_accept")"'
 
 # The delete route has to exist on the container or the button is dead on arrival —
 # and the container must NOT be where the bin/-only rule lives.
@@ -798,6 +803,57 @@ is  "approve mounts exactly one path" "$(grep -c '^      - \${ZPOOL_VOLUME}' <<<
 has "and it is the approvals dir"     "$approve" "intake-state/approvals:/approvals"
 has "approve is read_only"            "$approve" "read_only: true"
 has "approve drops all caps"          "$approve" "cap_drop"
+
+
+# ------------------------------------------- withdrawal is earned, not assumed
+# A NOTIFICATION DISAPPEARS ONLY WHEN THE WORK BEHIND ITS BUTTON SUCCEEDED. This used
+# to be asserted by grepping apply.sh for the line `(( REFUSED == before )) && retract`
+# — which passes if the line is present and the surrounding logic is wrong, and fails
+# if someone rewrites it correctly in another shape. It was testing the text.
+#
+# So run the thing. Twice: once on a tap that moves the document, once on a tap that
+# is refused. A refused move moved NOTHING, and its buttons are still the only way to
+# act — taking them off the phone would leave you with a document you can no longer
+# reach and no sign anything went wrong.
+echo "withdrawal"
+# A PATH STUB for curl, not a shadowed retract(): apply.sh sources pigeonhole.lib.sh,
+# which sources ntfy.lib.sh, which redefines retract() over anything declared first.
+# Stubbing the binary is the only layer below all of that — the same trick liquidroom's
+# suite uses for docker. NTFY_DISABLE must be UNSET for the call to reach it, which is
+# safe precisely because the stub is what answers.
+STUB="${TMP}/stub"; mkdir -p "$STUB"
+cat > "${STUB}/curl" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CURL_LOG}"
+STUBEOF
+chmod +x "${STUB}/curl"
+
+apply_trace() { # -> the DELETE lines apply's transport actually issued
+    : > "${TMP}/curl.log"
+    DOCS="${TMP}/docs" STATE_DIR="${TMP}/state" CURL_LOG="${TMP}/curl.log" \
+    PATH="${STUB}:${PATH}" NTFY_DISABLE='' \
+        bash "${SCRIPT_DIR}/pigeonhole.apply.sh" >/dev/null 2>&1
+    grep -- '-X DELETE' "${TMP}/curl.log" || true
+}
+
+seed
+jq -nc --arg a accept '{action:$a,at:"t"}' > "${STATE_DIR}/approvals/${ID}.json"
+ok_out="$(apply_trace)"
+has "a tap that moves the document withdraws it" "$ok_out" "-X DELETE"
+
+# Refuse the move by making the destination already exist as a DIRECTORY, which mv
+# cannot overwrite — the same shape as any refusal apply reports.
+seed
+mkdir -p "${DOCS}/09_receipts-and-purchases/a.pdf"
+jq -nc --arg a accept '{action:$a,at:"t"}' > "${STATE_DIR}/approvals/${ID}.json"
+bad_out="$(apply_trace)"
+is "a refused move withdraws nothing" "$bad_out" ""
+# ...and it must be refused for the RIGHT reason. Without this the case would pass
+# just as well if apply had crashed before reaching the move at all, which is the
+# commonest way a negative test rots into a tautology.
+is "the document is still staged"     "$(state)" "staged"
+is "and still in staging/"            "$([ -f "${DOCS}/staging/a.pdf" ] && echo yes)" "yes"
+rm -rf "${DOCS}/09_receipts-and-purchases/a.pdf"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
