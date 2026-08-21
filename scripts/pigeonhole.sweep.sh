@@ -141,17 +141,17 @@ for f in "${PROPOSALS_DIR}"/*.json; do
             stamp "$f" --arg at "${dest#"${DOCS}/"}" '. + {state:"binned", at:$at}'
             binned=$((binned + 1)); log "binned ${sp} (${age_h}h staged)"
             offer_accept=1; [[ "$bl" != "null" ]] && offer_accept=0
-            binbody="1\. $(md_escape "$orig")
-
-"
-            [[ "$bl" != "null" ]] && binbody+="$(reason_text "$bl")
-
-"
-            if (( offer_accept )); then
-                binbody+="_In bin/ after $(( age_h / 24 )) days with no decision. Accept still files it; Delete removes it for good._"
-            else
-                binbody+="_In bin/ after $(( age_h / 24 )) days with no decision. Delete removes it for good._"
-            fi
+            # PROSE, not italics. Italics mean truncation here and nothing else —
+            # a scope narrowed on 2026-08-21 because italics that mean several
+            # things mean nothing. This sentence is the note's whole point, so it
+            # was the worst thing in the repo to be whispering.
+            binnote="In bin/ after $(( age_h / 24 )) days with no decision."
+            (( offer_accept )) && binnote+=" Accept still files it."
+            binnote+=" Delete removes it for good."
+            binbody="$(body_join \
+                "$(body_list "$orig")" \
+                "$( [[ "$bl" != "null" ]] && reason_text "$bl" )" \
+                "$binnote")"
             # Withdraw this document's own earlier message (its blocked/review
             # proposal, or its nudge) and let the binned note stand in its place.
             # Safe to do unconditionally: the note below carries the SAME buttons,
@@ -178,14 +178,12 @@ for f in "${PROPOSALS_DIR}"/*.json; do
         fi
         if [[ "$bl" != "null" ]]; then
             notify_nudge "$(title_count "Still Blocked" 1 Document "" "$(title_age "$age_h")")" \
-                "1\. $(md_escape "$(basename "$sp")")
-
-$(reason_text "$bl")" "$id" "$(buttons "$id" 0)"
+                "$(body_join "$(body_list "$(basename "$sp")")" "$(reason_text "$bl")")" \
+                "$id" "$(buttons "$id" 0)"
         elif [[ -n "$fl" ]]; then
             notify_nudge "$(title_count "Still Flagged" 1 Document "" "$(title_age "$age_h")")" \
-                "$(batch_list "$f")
-
-${fl}" "$id" "$(buttons "$id" 1)"
+                "$(body_join "$(batch_list "$f")" "$fl")" \
+                "$id" "$(buttons "$id" 1)"
         else
             batch_members+=("$id")      # clean ones re-batch below, as one message
             (( age_h > batch_oldest_h )) && batch_oldest_h=$age_h
@@ -286,9 +284,8 @@ for f in "${PROPOSALS_DIR}"/*.json; do
         # No Accept: there is no proposal to accept, because the model never answered.
         # Delete is the only arm, and the document itself stays in bin/ until you tap it.
         notify_resolved "$(title_count Abandoned 1 Document)" \
-            "1\. $(md_escape "$(basename "$sp")")
-
-_The API could not read it in $(( age_d )) days. In bin/ now; nothing is deleted without a tap._" \
+            "$(body_join "$(body_list "$(basename "$sp")")" \
+                "The API could not read it in $(( age_d )) days. It is in bin/ now, and nothing is deleted without a tap.")" \
             "$id" "$(bin_buttons "$id" 0)"
     else
         log "  !! could not bin ${sp}"

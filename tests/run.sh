@@ -306,7 +306,7 @@ is "every tap drained its marker" "$(markers)" "0"
 # succeed: a stray marker naming one is a refusal, not a move.
 tap skip
 is  "a skip marker is refused"    "$(state)" "binned"
-has "and says the action is gone" "$(cat "${TMP}/aout")" "unknown action"
+has "and says the action is gone" "$(cat "${TMP}/aout")" "Unknown action: skip"
 
 # A document binned when bin/ already holds that name gets a timestamp prefix. An
 # earlier where_is() rebuilt the bin path from the ORIGINAL name, so that document
@@ -532,7 +532,7 @@ has   "only STAGED records are counted"    "$t" "Model Paused: 2 Documents"
 # would read as an empty bracket rather than as Mixed.
 has   "and a mixed outage names both"      "$t" "Model Paused: 2 Documents [Mixed]"
 has   "and they are listed"                "$t" '1\. a.pdf'
-has   "the reason is the newest staged failure" "$t" "_Out of credits."
+has   "the reason is the newest staged failure" "$t" $'\u25aa Out of credits'
 hasnt "never a binned record's"            "$t" "Something else entirely"
 has   "the summary rides its stable id"    "$t" "id=[pigeonhole-paused]"
 

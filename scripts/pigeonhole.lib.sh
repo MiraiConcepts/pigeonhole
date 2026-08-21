@@ -369,26 +369,30 @@ flags_sentence() {
     [[ -n "$out" ]] && printf 'Document %s.' "$out"
 }
 
-# batch_list <record-file>... -> the notification body's item list: one item
-# per document — a LITERAL "1." (dot escaped, so no markdown renderer can turn
-# it into a list: the Android app renders ordered-list markers as unnumbered
-# dots, seen on the actual device 2026-08-01), the original name, a HARD BREAK
-# (trailing two spaces), and the destination on a second line indented with
-# NBSPs — list indentation died with the list, and ordinary leading spaces are
-# collapsed by the web renderer. Every construct here is load-bearing; plain
-# lists, hard breaks alone, an ASCII tree, a fenced block and inline code spans
-# were all tried the same day and rejected on the device. Names ARE md_escaped
-# now that nothing is code-spanned: a filename is untrusted text off another
+# batch_list <record-file>... -> the notification body's item list: one item per
+# document, its original name over its destination path.
+#
+# THE RENDERING MOVED to body_list() in ntfy/kinds.sh on 2026-08-21. Every device
+# quirk it encodes was discovered HERE, on the actual phone on 2026-08-01 — a literal
+# escaped "1\." because the Android app renders real ordered-list markers as
+# unnumbered dots, a trailing two-space hard break, and an NBSP indent because the web
+# renderer collapses ordinary leading whitespace. Plain lists, hard breaks alone, an
+# ASCII tree, a fenced block and inline code spans were all tried the same day and
+# rejected on the device. liquidroom then copied the `1\.` trick with a comment citing
+# this function as the precedent, which is the drift signature that produced four
+# copies of notify(). One renderer means one place to fix them.
+#
+# --all rather than the five-item cap: this list sits above an Accept button that
+# files EVERY member, and showing 5 of 12 there means approving seven documents you
+# never saw. Names are escaped by body_list — a filename is untrusted text off another
 # device, and a link inside one would otherwise render live in a notification.
 batch_list() {
-    local f n=0 pad=$'    '
+    local f
+    local -a items=()
     for f in "$@"; do
-        n=$((n+1))
-        printf '%d\\. %s  \n%s%s\n' "$n" \
-            "$(md_escape "$(jq -r '.original_name // "?"' "$f")")" \
-            "$pad" \
-            "$(md_escape "$(jq -r '.dest_path // "?"' "$f")")"
+        items+=("$(jq -r '.original_name // "?"' "$f")"$'\t'"$(jq -r '.dest_path // "?"' "$f")")
     done
+    body_list --all "${items[@]}"
 }
 
 # buttons <id> <1|0 offer-Accept> — the Actions header for a STAGED proposal.
@@ -497,7 +501,7 @@ sync_paused_summary() {
     # consistent by hiding the part you most need to know.
     paused_sync "$PAUSED_NTFY_ID" Document "${reason:-The API is unavailable}" \
         "$(paused_cause "${reasons[@]:-}")" \
-        "moved to bin/ in 7 days, nothing is deleted" "${items[@]}"
+        "Moved to bin/ in 7 days. Nothing is deleted." "${items[@]}"
 }
 
 # notify / retract / ntfy_muted / ntfy_id_safe moved to ntfy/ntfy.lib.sh (sourced at
