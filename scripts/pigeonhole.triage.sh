@@ -561,16 +561,14 @@ if (( ${#clean[@]} )); then
     bid="$(new_uuid)"
     cfiles=()
     for rid in "${clean[@]}"; do cfiles+=("${PROPOSALS_DIR}/${rid}.json"); done
-    body="$(batch_list "${cfiles[@]}")
-"
     # No count of flagged/blocked here — each of those already has its own
     # notification, so a tail line was the same fact twice. The truncation count
     # is different: deferred documents have NO other notification yet, and
     # silently processing 20 of 200 reads as "that's everything" while the other
-    # 180 look lost until someone opens the folder.
-    (( TRUNCATED > 0 )) && body+="
-_${TRUNCATED} more still queued_
-"
+    # 180 look lost until someone opens the folder. It is one of the three things
+    # italics mean, which is why it goes through body_aside rather than a literal.
+    body="$(body_join "$(batch_list "${cfiles[@]}")" \
+        "$( (( TRUNCATED > 0 )) && body_aside "${TRUNCATED} more still queued" )")"
     jq -nc --arg i "$bid" --argjson m "$(printf '%s\n' "${clean[@]}" | jq -R -s -c 'split("\n")|map(select(length>0))')" \
         --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{id:$i, kind:"batch", state:"staged", members:$m, staged_at:$t}' > "${PROPOSALS_DIR}/${bid}.json"
@@ -610,17 +608,17 @@ for rid in "${NEW_IDS[@]:-}"; do
             btitle="$(title_count Blocked 1 Document)"
         fi
         notify_proposal "$btitle" \
-            "1\. $(md_escape "$(basename "$(jq -r .staged_path "$f")")")
-
-$(reason_text "$bl")" "$(buttons "$rid" 0)" "$rid"
+            "$(body_join \
+                "$(body_list "$(basename "$(jq -r .staged_path "$f")")")" \
+                "$(reason_text "$bl")")" \
+            "$(buttons "$rid" 0)" "$rid"
     elif [[ -n "$fl" ]]; then
         # `Flagged`, not `Review`: the title reports what happened to the document,
         # and the two buttons underneath already say what to do about it. This was
         # the only title in the repo giving an instruction.
         notify_proposal "$(title_count Flagged 1 Document)" \
-            "$(batch_list "$f")
-
-${fl}" "$(buttons "$rid" 1)" "$rid"
+            "$(body_join "$(batch_list "$f")" "$fl")" \
+            "$(buttons "$rid" 1)" "$rid"
     fi
 done
 
@@ -635,7 +633,7 @@ done
 # is how a topic gets muted.
 if (( STUCK > 0 )); then
     notify_fault "$(title_count Stuck "$STUCK" Document)" \
-        "Could not move $( (( STUCK == 1 )) && printf 'a document' || printf '%s documents' "$STUCK" ) out of the documents root. Disk full, or permissions changed? The trigger will keep retrying until this is cleared." \
+        "Could not move $( (( STUCK == 1 )) && printf 'a document' || printf '%s documents' "$STUCK" ) out of the documents root. The disk may be full, or permissions may have changed. The trigger will keep retrying until this is cleared." \
         "$STUCK_NTFY_ID"
     log "  !! ${STUCK} document(s) STUCK at root"
     exit 1

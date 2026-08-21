@@ -99,17 +99,29 @@ where_is() {
     esac
 }
 
-refuse() { # $1=id $2=reason
-    REFUSED=$((REFUSED+1)); REFUSALS+="$2
-"
-    log "  REFUSE ${1:0:8} — $2"
+# refuse <id> <name> <reason>
+#
+# The name and the reason are separate fields, tab-joined, because that is the shape
+# body_list() renders: the document as an item, the reason indented beneath it. They
+# used to be one string joined by " — ", which the notify block then SPLIT BACK APART
+# on that same separator — so a filename containing an em-dash surrounded by spaces
+# (a perfectly ordinary thing on a synced document) tore the item in the wrong place.
+# An empty name is a refusal with nothing to blame, and stands alone as its own item.
+#
+# NO FULL STOP on either field: both land on a body line, and no line but prose takes
+# one. reason_text() returns a SENTENCE, because its other two callers use it as prose
+# — so the one call site that uses it as a detail strips the stop rather than the
+# function guessing which shape its caller wanted.
+refuse() { # $1=id $2=name $3=reason
+    REFUSED=$((REFUSED+1)); REFUSALS+="$2"$'\t'"$3"$'\n'
+    log "  REFUSE ${1:0:8} — ${2:+${2}: }$3"
 }
 
 # apply_one <uuid> <action>
 apply_one() {
     local id="$1" action="$2" rec f cur st sha dest
     f="${PROPOSALS_DIR}/${id}.json"
-    [[ -f "$f" ]] || { refuse "$id" "No such proposal."; return; }
+    [[ -f "$f" ]] || { refuse "$id" "" "No such proposal"; return; }
     rec="$(cat "$f")"
 
     # A batch is a list of member ids and nothing else. Members that have already
@@ -132,29 +144,29 @@ apply_one() {
     # master/documents is a Syncthing folder — the file may have been renamed,
     # replaced or removed from another device in between. Acting on a stale proposal
     # is how the wrong document gets filed under the right name.
-    [[ -n "$cur" && -f "$cur" ]] || { refuse "$id" "$(jq -r .original_name <<<"$rec") — Document is no longer where it was."; return; }
+    [[ -n "$cur" && -f "$cur" ]] || { refuse "$id" "$(jq -r .original_name <<<"$rec")" "Document is no longer where it was"; return; }
     if [[ -n "$sha" && "$(sha256_of "$cur")" != "$sha" ]]; then
-        refuse "$id" "$(jq -r .original_name <<<"$rec") — Document changed after it was proposed."; return
+        refuse "$id" "$(jq -r .original_name <<<"$rec")" "Document changed after it was proposed"; return
     fi
 
     case "$action" in
       accept)
         [[ "$st" == "filed" ]] && return 0                       # already there
         if [[ "$(jq -r '.blocked // "null"' <<<"$rec")" != "null" ]]; then
-            refuse "$id" "$(jq -r .original_name <<<"$rec") — $(reason_text "$(jq -r .blocked <<<"$rec")")"; return
+            refuse "$id" "$(jq -r .original_name <<<"$rec")" "$(r="$(reason_text "$(jq -r .blocked <<<"$rec")")"; printf '%s' "${r%.}")"; return
         fi
         dest="${DOCS}/$(jq -r '.dest_path // empty' <<<"$rec")"
-        [[ "$dest" != "${DOCS}/" ]] || { refuse "$id" "No destination recorded."; return; }
+        [[ "$dest" != "${DOCS}/" ]] || { refuse "$id" "" "No destination recorded"; return; }
         # Re-run the containment check at apply time. The triage already did it, but
         # this is the step that actually writes, and the record is a file on disk
         # that something else could have edited.
-        under_docs "$dest" || { refuse "$id" "Destination escapes the documents tree."; return; }
-        [[ -e "$dest" ]] && { refuse "$id" "$(jq -r .original_name <<<"$rec") — Something is already at ${dest#"${DOCS}/"}."; return; }
+        under_docs "$dest" || { refuse "$id" "" "Destination escapes the documents tree"; return; }
+        [[ -e "$dest" ]] && { refuse "$id" "$(jq -r .original_name <<<"$rec")" "Something is already at ${dest#"${DOCS}/"}"; return; }
         if move_verified "$cur" "$dest" "$sha"; then
             FILED=$((FILED+1)); log "  FILED  ${dest#"${DOCS}/"}"
             jq -c --arg at "${dest#"${DOCS}/"}" '. + {state:"filed", at:$at}' <<<"$rec" > "$f"
         else
-            refuse "$id" "$(jq -r .original_name <<<"$rec") — Move failed verification."
+            refuse "$id" "$(jq -r .original_name <<<"$rec")" "Move failed verification"
         fi ;;
 
       discard)
@@ -166,7 +178,7 @@ apply_one() {
             BINNED=$((BINNED+1)); log "  BINNED ${dest#"${DOCS}/"}"
             jq -c --arg at "${dest#"${DOCS}/"}" '. + {state:"binned", at:$at}' <<<"$rec" > "$f"
         else
-            refuse "$id" "$(jq -r .original_name <<<"$rec") — Could not move to bin."
+            refuse "$id" "$(jq -r .original_name <<<"$rec")" "Could not move to bin"
         fi ;;
 
       delete)
@@ -180,17 +192,17 @@ apply_one() {
         # this script may rely on. Anything not currently in bin/ is refused.
         [[ "$st" == "deleted" ]] && return 0
         [[ "$cur" == "${BIN_DIR}/"* ]] || {
-            refuse "$id" "$(jq -r .original_name <<<"$rec") — Only a document in bin/ can be deleted."; return; }
+            refuse "$id" "$(jq -r .original_name <<<"$rec")" "Only a document in bin/ can be deleted"; return; }
         if rm -f -- "$cur" && [[ ! -e "$cur" ]]; then
             DELETED=$((DELETED+1)); log "  DELETED ${cur#"${DOCS}/"}"
             # `at` goes with it: where_is reads that field, and a path that no longer
             # exists would make every later tap refuse with the wrong reason.
             jq -c '. + {state:"deleted"} | del(.at)' <<<"$rec" > "$f"
         else
-            refuse "$id" "$(jq -r .original_name <<<"$rec") — Could not delete."
+            refuse "$id" "$(jq -r .original_name <<<"$rec")" "Could not delete"
         fi ;;
 
-      *) refuse "$id" "unknown action: ${action}" ;;
+      *) refuse "$id" "" "Unknown action: ${action}" ;;
     esac
 }
 
@@ -234,33 +246,22 @@ log "filed ${FILED}, binned ${BINNED}, deleted ${DELETED}, refused ${REFUSED}"
 # how a useful topic becomes one you mute. A refusal is the opposite: you tapped,
 # nothing happened, and without this you would never know why.
 if (( REFUSED > 0 )); then
-    # Refusal lines arrive as "name — Reason." (or a bare reason when there is no
-    # name to blame). Rendered as a markdown ordered list matching batch_list:
-    # a literal "1." (escaped so no renderer restyles it), the name, a hard
-    # break (trailing two spaces), and the reason hanging beneath on NBSP
-    # indentation. Names are md_escaped rather than code-spanned — the owner
-    # dropped the spans 2026-08-01, and a filename is untrusted text.
-    body=""
-    n=0
-    pad=$'    '
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        n=$((n+1))
-        line="$(md_escape "$line")"
-        if [[ "$line" == *" — "* ]]; then
-            body+="${n}\. ${line%% — *}  
-${pad}${line#* — }
-"
-        else
-            body+="${n}\. ${line}
-"
-        fi
-    done <<<"$REFUSALS"
-    # Default priority, like every other notification in this repo. This was the last
-    # `high` left anywhere in it, and it was the wrong place for one twice over: a
+    # Refusal lines arrive as "name<TAB>Reason." — the document as an item, the
+    # reason indented beneath it. A line with an empty name is a refusal with nothing
+    # to blame and stands alone.
+    #
+    # No priority argument, and there is no longer one to pass. This was the last
+    # `high` left in the repo, and it was the wrong place for one twice over: a
     # refusal is a thing you tapped and can tap again, not an emergency, and
     # everything-shouts is how a topic gets muted — after which the loud messages are
     # the first thing lost. Urgency belongs in what the message says.
+    items=()
+    while IFS= read -r line; do
+        [[ -n "${line//[[:space:]]/}" ]] || continue
+        [[ "$line" == $'\t'* ]] && line="${line#$'\t'}"
+        items+=("$line")
+    done <<<"$REFUSALS"
+    body="$(body_list --all "${items[@]}")"
     notify_fault "$(title_count Refused "$REFUSED" Document)" "$body"
 fi
 
