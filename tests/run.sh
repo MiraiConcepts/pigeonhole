@@ -532,7 +532,7 @@ has   "only STAGED records are counted"    "$t" "Model Paused: 2 Documents"
 # would read as an empty bracket rather than as Mixed.
 has   "and a mixed outage names both"      "$t" "Model Paused: 2 Documents [Mixed]"
 has   "and they are listed"                "$t" '1\. a.pdf'
-has   "the reason is the newest staged failure" "$t" $'\u25aa Out of credits'
+has   "the reason is the newest staged failure" "$t" $'\u2022 Out of credits'
 hasnt "never a binned record's"            "$t" "Something else entirely"
 has   "the summary rides its stable id"    "$t" "id=[pigeonhole-paused]"
 
