@@ -56,6 +56,21 @@ LOCK_FILE="${STATE_DIR}/.intake.lock"
 # not in restic's path list), and is not synced to peers. Wiped on exit.
 WORK_DIR="${STATE_DIR}/work"
 VOCAB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pigeonhole.vocab.json"
+# The committed vocabulary is a GENERIC SAMPLE; the real one lives beside the corpus
+# and is preferred when readable. Its values accumulate from real documents — clinics,
+# employers, insurers, addresses — and its owner enum names real people, so published
+# together they read as a personal profile rather than a schema. This repo is public
+# and carried exactly that for about a year before anyone noticed (2026-08-24).
+#
+# The location is chosen, not convenient. Under $DOCS it is excluded from git twice
+# over (the `*` deny AND audit/pre-commit's syncthing/ DENY_PREFIX); it is invisible
+# to audit.sh §16, which FAILS on an ignored *.json inside a pipeline directory and so
+# rules out simply untracking it in place; it rides in restic via syncthing/data; and
+# pigeonhole.triage.service already carries $DOCS in ReadWritePaths=. The leading dot
+# keeps it out of list_candidates() and out of the .path unit's glob, so the pipeline
+# never tries to file its own vocabulary.
+VOCAB_LOCAL="${VOCAB_LOCAL:-${DOCS}/.pigeonhole.vocab.json}"
+[[ -r "$VOCAB_LOCAL" ]] && VOCAB="$VOCAB_LOCAL"
 
 # --- propose-and-approve ---------------------------------------------------
 # State is the FILESYSTEM, not a state file: a document is wherever it currently

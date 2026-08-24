@@ -160,6 +160,28 @@ a proposed path segment is a legal, safe filename component, and one asserts the
 resolved destination is still inside the documents tree. They are the security
 boundary. Do not weaken them.
 
+## The vocabulary is not in this repo
+
+`scripts/pigeonhole.vocab.json` is a **generic sample**. The values this pipeline
+actually classifies against live beside the corpus, outside version control, and the
+library prefers that file whenever it is readable.
+
+The split is not tidiness. The vocabulary is *harvested from a real corpus*: document
+types and qualifiers accumulate the clinics, employers, insurers and addresses a person
+actually deals with, and the owner enum names real people. Published together those
+stop being a schema and become a profile — a readable summary of someone's medical
+history, immigration status, employers and home addresses. This repository is public
+and carried exactly that for about a year before anyone noticed.
+
+Nothing automated caught it, and nothing was going to. Secret scanners look for
+credentials, and a list of clinic names is not a credential — the full-history scan
+passed clean throughout. The only thing that finds this class of problem is a person
+reading the file and asking what it discloses.
+
+So: **add real values to the local file, never to the committed one.** The suite
+asserts both halves of the fallback and refuses a committed sample carrying real
+qualifiers or named owners, which is the closest thing to a gate this can have.
+
 ## Scope
 
 A component of [catallenya](https://github.com/carrein/catallenya), published for

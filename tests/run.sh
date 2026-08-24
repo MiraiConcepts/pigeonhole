@@ -88,6 +88,50 @@ is "the DOCS root is NOT"           "$(under_staging "${DOCS}/staging/../0801_x.
 is "and under_docs would say it is" "$(under_docs "${DOCS}/staging/../0801_x.pdf" && echo in)" "in"
 is "a filed folder is not staging"  "$(under_staging "${DOCS}/09_receipts-and-purchases/x.pdf" && echo in)" ""
 
+# ------------------------------------------------------- vocabulary resolution
+# The committed vocabulary is a GENERIC SAMPLE; the real values live off the repo at
+# $DOCS/.pigeonhole.vocab.json (see pigeonhole.lib.sh for why the location is what it
+# is). Both directions are asserted because both fail SILENTLY: with no local file the
+# classifier simply gets a thinner prompt and nothing errors, and a local file that is
+# not preferred would put the real corpus vocabulary back into the API request while
+# the repo copy still looks clean.
+echo "vocabulary resolution"
+
+vocab_for() { # $1 = a DOCS dir -> the VOCAB path the library resolves to
+    ( export DOCS="$1" STATE_DIR="${TMP}/state"
+      # shellcheck source=../scripts/pigeonhole.lib.sh
+      source "${SCRIPT_DIR}/pigeonhole.lib.sh" >/dev/null 2>&1
+      printf '%s' "$VOCAB" )
+}
+
+fresh
+is "falls back to the committed sample when no local file exists" \
+   "$(vocab_for "${TMP}/docs")" "${SCRIPT_DIR}/pigeonhole.vocab.json"
+
+printf '{"doc_type":["x"],"qualifier":["none"],"owner":["self","unknown"]}\n' \
+    > "${TMP}/docs/.pigeonhole.vocab.json"
+is "prefers the local file when it is readable" \
+   "$(vocab_for "${TMP}/docs")" "${TMP}/docs/.pigeonhole.vocab.json"
+rm -f "${TMP}/docs/.pigeonhole.vocab.json"
+
+# The sample must stay a WORKING vocabulary, not a placeholder. Three consumers read
+# it: build_schema() feeds .owner straight into the API schema as enum:$owner, so an
+# empty array lands as enum:null and the request is rejected outright; classify_prompt
+# joins .doc_type and .qualifier, which jq errors on if either is not an array.
+is "the sample parses"                 "$(jq -r 'type' "${SCRIPT_DIR}/pigeonhole.vocab.json" 2>/dev/null)" "object"
+is "and has a non-empty owner enum"    "$(jq -r '.owner | length > 0' "${SCRIPT_DIR}/pigeonhole.vocab.json")" "true"
+is "and arrays for doc_type/qualifier" \
+   "$(jq -r '(.doc_type|type) + "," + (.qualifier|type)' "${SCRIPT_DIR}/pigeonhole.vocab.json")" "array,array"
+
+# The invariant the whole split exists to hold. qualifier is where vendor, clinic,
+# insurer and employer names accumulate, so the committed copy carries exactly one
+# placeholder value and never a real one. If this case ever fails, a real vocabulary
+# has been committed to a public repo again — which is what happened before 2026-08-24.
+is "the sample carries no real qualifiers" \
+   "$(jq -r '.qualifier | join(",")' "${SCRIPT_DIR}/pigeonhole.vocab.json")" "none"
+is "and no named owners beyond the enum stubs" \
+   "$(jq -r '.owner | join(",")' "${SCRIPT_DIR}/pigeonhole.vocab.json")" "self,unknown"
+
 # ------------------------------------------------------------------- valid_date
 # The schema regex accepts 2023-02-29 (the 2026-07-18 battery produced exactly
 # that) and year 0000, which filed silently until 2026-07-30.

@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "Spelling hints and two small enums for pigeonhole.triage — NOT a gate. The old",
+    "closed-vocabulary boundary retired with unsupervised filing (2026-07-31): a human",
+    "tap now sits between the model and the filesystem, and path safety lives in",
+    "valid_segment()/under_docs() in pigeonhole.lib.sh.",
+    "",
+    "THIS COMMITTED FILE IS A GENERIC SAMPLE. The values this box actually classifies",
+    "against live OFF the repo, at $DOCS/.pigeonhole.vocab.json, and pigeonhole.lib.sh",
+    "prefers that file when it is readable. The split exists because the live file is",
+    "harvested from a real corpus: doc_type and qualifier accumulate the clinics,",
+    "employers, insurers and addresses a person actually deals with, and owner names",
+    "real people. Published together those read as a personal profile rather than a",
+    "schema, which is exactly what happened — this repo is public and carried one for",
+    "about a year. Keep it that way: add real values to the local file, never here.",
+    "",
+    "What each key is for: doc_type and qualifier are shown to the classifier as values",
+    "already in use, so the same vendor is spelled the same way across years — the model",
+    "may still coin a new one. owner is a real enum in the schema. _lookalike_families",
+    "routes notifications: a doc_type or folder listed there gets its own Needs-a-look",
+    "message instead of riding in the batch, so approve-all never covers it.",
+    "There is no folder list here: the prompt reads the live folders from disk.",
+    "",
+    "The local file may additionally carry self_label, self_email and owner_identities.",
+    "Absent them the prompt degrades to owner=unknown -> needs_human=true for anyone",
+    "but the owner, which is the safe direction and costs nothing off-box."
+  ],
+  "doc_type": [
+    "invoice",
+    "receipt",
+    "paystub",
+    "tax-return",
+    "bank-statement",
+    "utility-bill",
+    "insurance-card",
+    "benefits-booklet",
+    "medical-memo",
+    "blood-report",
+    "health-screening-report",
+    "prescription",
+    "discharge-summary",
+    "medical-certificate",
+    "lease",
+    "inventory-list",
+    "employment-contract",
+    "offer-letter",
+    "resume",
+    "cover-letter",
+    "ebook"
+  ],
+  "qualifier": [
+    "none"
+  ],
+  "owner": [
+    "self",
+    "unknown"
+  ],
+  "_lookalike_families": {
+    "_comment": [
+      "Earned from a corpus's own history: a category listed here got mis-sorted before,",
+      "so it is never allowed to ride in an approve-all batch. A classifier will not beat",
+      "a careful human on the cases that already beat one.",
+      "Empty in the committed sample; the live file carries the real families."
+    ],
+    "doc_type": [],
+    "folder": []
+  }
+}

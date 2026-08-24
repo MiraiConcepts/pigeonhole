@@ -187,13 +187,13 @@ Rules (from the owner's filing scheme):
   2026-07-18: a lab report printing "Received 06 Nov" and "Generated 07 Nov" files
   as 11-07 — the owner adjudicated exactly this class by hand.)
 - Singapore documents print dates as DD/MM/YYYY: 08/07/2026 is 8 July, never Aug 7.
-- owner: an EMAIL ADDRESS identifies a person just as a name does. A document
-  addressed to owner@example.invalid is owner="self" even if no name appears on
-  it — online receipts routinely identify the customer only by account email. Match
-  the address itself, not the domain: protonmail.com is a mail provider.
-  "self" is the repository owner. Other known people are in the schema
-  enum: REDACTED-PERSON-B, REDACTED-PERSON-C, REDACTED-PERSON-D.
-  Someone not listed -> owner="unknown" and needs_human=true.
+- owner: an EMAIL ADDRESS identifies a person just as a name does — online receipts
+  routinely identify the customer only by account email. Match the address itself,
+  not the domain: a mail provider domain identifies nobody.
+$(jq -r 'if .self_email then "  A document addressed to \(.self_email) is owner=\"self\" even if no name is printed on it." else empty end' "$VOCAB")
+  "self" is $(jq -r '.self_label // "the repository owner"' "$VOCAB").
+$(jq -r '.owner_identities // {} | to_entries[] | "  \(.key) is \(.value)."' "$VOCAB")
+  Anyone not named above -> owner="unknown" and needs_human=true.
 - Set needs_human=true when you are unsure of anything. It costs the owner a glance;
   a misfiling costs them a lost document.
 EOF
