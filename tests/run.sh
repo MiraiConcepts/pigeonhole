@@ -899,5 +899,54 @@ is "the document is still staged"     "$(state)" "staged"
 is "and still in staging/"            "$([ -f "${DOCS}/staging/a.pdf" ] && echo yes)" "yes"
 rm -rf "${DOCS}/09_receipts-and-purchases/a.pdf"
 
+# ------------------------------------------------- the sweep, actually RUN
+#
+# This suite runs the real triage and the real apply, but every one of its sweep
+# assertions greps the source. That is the gap issue #18 lived in on the afterimage
+# side, and the same gap here: a script that ends `exit 0` no matter what reads
+# perfectly to a grep.
+#
+# Milder here than in afterimage — both bin sites already had an else branch and
+# logged "could not bin" — but a log line is not a signal. Until 2026-08-24 the tally
+# counted only successes and the exit was unconditional, so a failed bin was visible
+# in the journal and invisible to systemd, OnFailure=, the stamp and the watchdog.
+echo
+echo "sweep — the failure path"
+
+sweep_tree() {   # -> a scratch tree with one staged record old enough to bin
+    local t; t="$(mktemp -d)"
+    mkdir -p "${t}/docs/staging" "${t}/docs/bin" "${t}/state/proposals" "${t}/state/approvals"
+    printf 'x' > "${t}/docs/staging/2026-01-01-invoice-none.pdf"
+    local sha; sha="$(sha256sum "${t}/docs/staging/2026-01-01-invoice-none.pdf" | cut -d' ' -f1)"
+    jq -n --arg at "staging/2026-01-01-invoice-none.pdf" --arg s "$sha" \
+       '{state:"staged", kind:"solo", at:$at, sha256:$s, original_name:"orig.pdf"}' \
+       > "${t}/state/proposals/testrec.json"
+    touch -d '10 days ago' "${t}/state/proposals/testrec.json"
+    printf '%s' "$t"
+}
+sweep_run() {    # $1 tree -> sets SW_OUT, SW_RC
+    SW_RC=0
+    SW_OUT="$(DOCS="${1}/docs" STATE_DIR="${1}/state" NTFY_DISABLE=1 \
+              bash "${SCRIPT_DIR}/pigeonhole.sweep.sh" 2>&1)" || SW_RC=$?
+}
+
+# The control, so the failure case cannot pass against a sweep that always exits 1.
+ST="$(sweep_tree)"
+sweep_run "$ST"
+is  "a good run exits 0"         "$SW_RC" "0"
+has "and reports nothing failed" "$SW_OUT" "0 failed"
+is  "and the document is binned" "$(ls "${ST}/docs/bin" | wc -l)" "1"
+rm -rf "$ST"
+
+ST="$(sweep_tree)"
+chmod 500 "${ST}/docs/bin"       # readable, not writable
+sweep_run "$ST"
+is  "an unwritable bin/ FAILS the unit"    "$SW_RC" "1"
+has "and says which document it could not move" "$SW_OUT" "could not bin"
+has "and counts it in the tally"           "$SW_OUT" "1 failed"
+# The document must survive: staging/ is where the next run will look for it.
+is  "and the document is still staged"     "$(ls "${ST}/docs/staging" | wc -l)" "1"
+chmod 700 "${ST}/docs/bin"; rm -rf "$ST"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

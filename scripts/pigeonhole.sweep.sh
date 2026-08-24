@@ -86,6 +86,14 @@ fi
 
 now=$(date +%s)
 renotified=0; binned=0; batch_members=()
+# FAILURES ARE COUNTED, added 2026-08-24 alongside the same fix in afterimage.sweep.sh
+# (issue #18, checkbox 5). This script was MILDER than afterimage's — both bin sites
+# already had an else branch and logged "could not bin" — but a log line is not a
+# signal: the tally counted only successes and the script ended `exit 0` regardless,
+# so a failed bin was visible in the journal and invisible to systemd, the inherited
+# OnFailure=, the ExecStartPost= stamp and the watchdog. Every layer built to notice
+# reported healthy. Better instrumented, identically silent where it mattered.
+FAILED=0
 # The age the re-batched message reports. Tracked as the OLDEST of the overdue
 # members, not the newest: the batch is one message about several documents, and the
 # number on it should say how long the worst-served one has been waiting.
@@ -165,6 +173,7 @@ for f in "${PROPOSALS_DIR}"/*.json; do
             # notify_resolved does the retract itself, under the same id.
             notify_resolved "$(title_count Binned 1 Document)" "$binbody" "$id" "$(bin_buttons "$id" "$offer_accept")"
         else
+            FAILED=$((FAILED + 1))
             log "  !! could not bin ${sp}"
         fi
         continue
@@ -288,6 +297,7 @@ for f in "${PROPOSALS_DIR}"/*.json; do
                 "The API could not read it in $(( age_d )) days. It is in bin/ now, and nothing is deleted without a tap.")" \
             "$id" "$(bin_buttons "$id" 0)"
     else
+        FAILED=$((FAILED + 1))
         log "  !! could not bin ${sp}"
     fi
 done
@@ -341,6 +351,15 @@ for b in "${PROPOSALS_DIR}"/*.json; do
     log "withdrew the batch notification (no members still staged)"
 done
 
-(( renotified || binned || paused_binned )) && \
-    log "sweep: ${renotified} re-notified, ${binned} binned, ${paused_binned} binned after an outage"
+(( renotified || binned || paused_binned || FAILED )) && \
+    log "sweep: ${renotified} re-notified, ${binned} binned, ${paused_binned} binned after an outage, ${FAILED} failed"
+
+# ANY failure fails the unit, matching afterimage.sweep.sh and for the same reason:
+# this is reconciliation, nothing here notifies per document, so a partial failure is
+# completely silent and the documents it could not move keep their clocks stopped in
+# staging/. Its failures are filesystem-shaped — a full pool, a permissions change —
+# which are rarely transient and rarely partial.
+if (( FAILED > 0 )); then
+    exit 1
+fi
 exit 0
