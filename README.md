@@ -1,6 +1,6 @@
 # pigeonhole
 
-> A pipeline of [catallenya](https://github.com/carrein/catallenya), mirrored from
+> A pipeline of [catallenya](https://github.com/MiraiConcepts/catallenya), mirrored from
 > `pigeonhole/`. Force-synced by CI — open issues and pull requests on the parent
 > repo, not here. The document corpus itself stays in a Syncthing folder named
 > `documents` — that is the drop zone, not this code.
@@ -184,7 +184,7 @@ qualifiers or named owners, which is the closest thing to a gate this can have.
 
 ## Scope
 
-A component of [catallenya](https://github.com/carrein/catallenya), published for
+A component of [catallenya](https://github.com/MiraiConcepts/catallenya), published for
 reading rather than installation. It is not standalone: it expects a specific host
 filesystem layout, a file-sync tree to watch, a container definition that lives in
 the parent repository's compose file, and a systemd policy contract it inherits
