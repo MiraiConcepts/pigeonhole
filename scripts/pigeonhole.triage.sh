@@ -179,6 +179,12 @@ Rules (from the owner's filing scheme):
 - invoice vs receipt: use WHAT THE DOCUMENT CALLS ITSELF. If it is headed "Invoice"
   or "Tax Invoice", doc_type is "invoice". If headed "Receipt", it is "receipt".
   Do not reason about which word fits better — read the heading.
+- qualifier is the ISSUER, not the PORTAL the document was exported from. A health
+  portal, bank app or government e-service that redistributes someone else's document
+  brands every page it serves; that branding is not the issuer. Qualify a lab report
+  by the facility that performed or ordered it. (Three reports from one blood draw
+  arrived 2026-08-27 carrying a portal logo on every page and the performing facility
+  in the body, and the same document family was qualified two different ways.)
 - date: use the MOST PRECISE date PRINTED ON the document itself. Never guess from
   context. Month only -> YYYY-MM. Year only -> YYYY (a tax form's date is its tax
   year). If no date is printed at all, set date_source="absent" and needs_human=true.
@@ -191,6 +197,7 @@ Rules (from the owner's filing scheme):
   routinely identify the customer only by account email. Match the address itself,
   not the domain: a mail provider domain identifies nobody.
 $(jq -r 'if .self_email then "  A document addressed to \(.self_email) is owner=\"self\" even if no name is printed on it." else empty end' "$VOCAB")
+$(jq -r 'if .self_nric_tail then "  A NATIONAL ID NUMBER identifies a person just as a name does. A document whose only identifier is a national ID number ENDING IN \(.self_nric_tail) is owner=\"self\", even if no name is printed on it anywhere." else empty end' "$VOCAB")
   "self" is $(jq -r '.self_label // "the repository owner"' "$VOCAB").
 $(jq -r '.owner_identities // {} | to_entries[] | "  \(.key) is \(.value)."' "$VOCAB")
   Anyone not named above -> owner="unknown" and needs_human=true.
