@@ -369,6 +369,8 @@ for name in "${CANDS[@]}"; do
         continue
     fi
 
+    # Once per run (guarded), in this shell rather than inside ask()'s subshell.
+    ai_resolve_model
     log "  CLASSIFY ${name}"
     # The four verdicts are read separately here. Until now this was a bare
     # `if ! prop=...`, which collapsed all three failures into CLASSIFY_FAILED — so a
