@@ -117,7 +117,7 @@ build_schema() {
           needs_human:   {type:"boolean"},
           reason_code:   {type:"string", enum:[
             "OK","AMBIGUOUS_FOLDER","AMBIGUOUS_DATE","NO_DATE_PRINTED",
-            "OWNER_UNCLEAR","UNREADABLE","MULTIPLE_DOCUMENTS","LOOKALIKE_FAMILY"]}
+            "OWNER_UNCLEAR","UNREADABLE","MULTIPLE_DOCUMENTS"]}
         },
         required: ["folder","folder_is_new","doc_type","qualifier","owner","date",
                    "date_source","needs_human","reason_code"],
